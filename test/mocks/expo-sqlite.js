@@ -110,6 +110,7 @@ module.exports = {
       },
       misLibros: rowsFor(databaseInstance, 'SELECT * FROM mis_libros ORDER BY id'),
       listaCompras: rowsFor(databaseInstance, 'SELECT * FROM lista_compras ORDER BY id'),
+      sesionesLectura: rowsFor(databaseInstance, 'SELECT * FROM sesiones_lectura ORDER BY id'),
     };
   },
 

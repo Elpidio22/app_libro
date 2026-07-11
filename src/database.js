@@ -11,7 +11,7 @@ import {
 
 const DATABASE_NAME = 'biblioteca.db';
 const BACKUP_VERSION = 2;
-const DATABASE_VERSION = 3;
+const DATABASE_VERSION = 4;
 const ESTADOS_VALIDOS = ['quiero leer', 'leyendo', 'terminado', 'abandonado'];
 
 let databasePromise;
@@ -166,7 +166,7 @@ export async function inicializarBaseDeDatos() {
     version = 2;
   }
 
-  if (version < DATABASE_VERSION) {
+  if (version < 3) {
     await db.execAsync(`
       CREATE TABLE IF NOT EXISTS etiquetas (
         uuid TEXT PRIMARY KEY,
@@ -206,6 +206,26 @@ export async function inicializarBaseDeDatos() {
         VALUES (new.id, new.titulo, COALESCE(new.autor, ''));
       END;
       INSERT INTO mis_libros_fts(mis_libros_fts) VALUES ('rebuild');
+      PRAGMA user_version = 3;
+    `);
+    version = 3;
+  }
+
+  if (version < DATABASE_VERSION) {
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS sesiones_lectura (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        libro_uuid TEXT NOT NULL,
+        fecha TEXT NOT NULL,
+        hora_inicio TEXT NOT NULL,
+        hora_fin TEXT,
+        paginas_leidas INTEGER NOT NULL DEFAULT 0 CHECK (paginas_leidas >= 0),
+        FOREIGN KEY (libro_uuid) REFERENCES mis_libros(uuid) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_sesiones_fecha ON sesiones_lectura(fecha);
+      CREATE INDEX IF NOT EXISTS idx_sesiones_libro ON sesiones_lectura(libro_uuid);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_sesion_activa_por_libro
+      ON sesiones_lectura(libro_uuid) WHERE hora_fin IS NULL;
       PRAGMA user_version = ${DATABASE_VERSION};
     `);
   }
@@ -453,6 +473,96 @@ export async function obtenerEstadisticas() {
   `);
 }
 
+function fechaLocalISO(fecha = new Date()) {
+  const offset = fecha.getTimezoneOffset() * 60000;
+  return new Date(fecha.getTime() - offset).toISOString().slice(0, 10);
+}
+
+function calcularRacha(fechas, hoy = fechaLocalISO()) {
+  const dias = new Set(fechas.filter(Boolean));
+  const cursor = new Date(`${hoy}T12:00:00`);
+  if (!dias.has(hoy)) cursor.setDate(cursor.getDate() - 1);
+  let racha = 0;
+  while (dias.has(fechaLocalISO(cursor))) {
+    racha += 1;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return racha;
+}
+
+export async function obtenerSesionActiva(libroUuid) {
+  const db = await getDatabase();
+  return db.getFirstAsync(
+    `SELECT id, libro_uuid, fecha, hora_inicio, hora_fin, paginas_leidas
+     FROM sesiones_lectura
+     WHERE libro_uuid = ? AND hora_fin IS NULL
+     ORDER BY id DESC LIMIT 1`,
+    String(libroUuid)
+  );
+}
+
+export async function iniciarSesionLectura(libroUuid, paginaInicial = 0) {
+  const pagina = enteroNoNegativo(paginaInicial);
+  if (!libroUuid) throw new Error('El libro no es válido.');
+  if (pagina === null) throw new Error('La página inicial no es válida.');
+  const db = await getDatabase();
+  const ahora = new Date();
+  try {
+    const result = await db.runAsync(
+      `INSERT INTO sesiones_lectura
+        (libro_uuid, fecha, hora_inicio, hora_fin, paginas_leidas)
+       VALUES (?, ?, ?, NULL, ?)`,
+      String(libroUuid),
+      fechaLocalISO(ahora),
+      ahora.toISOString(),
+      pagina
+    );
+    return db.getFirstAsync('SELECT * FROM sesiones_lectura WHERE id = ?', result.lastInsertRowId);
+  } catch (error) {
+    if (String(error?.message).includes('UNIQUE')) {
+      throw new Error('Ya existe una sesión activa para este libro.');
+    }
+    throw error;
+  }
+}
+
+export async function terminarSesionLectura(libroUuid, paginaActual) {
+  const pagina = enteroNoNegativo(paginaActual);
+  if (pagina === null) throw new Error('La página actual no es válida.');
+  const db = await getDatabase();
+  let resultado = null;
+  await db.withExclusiveTransactionAsync(async (transaction) => {
+    const sesion = await transaction.getFirstAsync(
+      `SELECT * FROM sesiones_lectura
+       WHERE libro_uuid = ? AND hora_fin IS NULL
+       ORDER BY id DESC LIMIT 1`,
+      String(libroUuid)
+    );
+    if (!sesion) throw new Error('No hay una sesión activa para terminar.');
+    const paginaInicial = Number(sesion.paginas_leidas) || 0;
+    if (pagina < paginaInicial) {
+      throw new Error('La página actual no puede ser menor que la página donde comenzó la sesión.');
+    }
+    const horaFin = new Date().toISOString();
+    const paginasLeidas = pagina - paginaInicial;
+    await transaction.runAsync(
+      `UPDATE sesiones_lectura
+       SET hora_fin = ?, paginas_leidas = ?
+       WHERE id = ? AND hora_fin IS NULL`,
+      horaFin,
+      paginasLeidas,
+      sesion.id
+    );
+    resultado = {
+      ...sesion,
+      hora_fin: horaFin,
+      paginas_leidas: paginasLeidas,
+      minutos: Math.max(1, Math.round((Date.parse(horaFin) - Date.parse(sesion.hora_inicio)) / 60000)),
+    };
+  });
+  return resultado;
+}
+
 export async function obtenerCronicas() {
   const db = await getDatabase();
   const metricas = await db.getFirstAsync(`
@@ -468,7 +578,29 @@ export async function obtenerCronicas() {
     WHERE estado = 'terminado'
     ORDER BY fecha_fin IS NULL ASC, fecha_fin DESC, id DESC
   `);
-  return { metricas, historial };
+  const mesActual = fechaLocalISO().slice(0, 7);
+  const sesionesMes = await db.getFirstAsync(`
+    SELECT
+      COALESCE(SUM(paginas_leidas), 0) AS paginas_mes,
+      COALESCE(ROUND(SUM((julianday(hora_fin) - julianday(hora_inicio)) * 1440)), 0) AS minutos_mes
+    FROM sesiones_lectura
+    WHERE hora_fin IS NOT NULL AND substr(fecha, 1, 7) = ?
+  `, mesActual);
+  const diasLectura = await db.getAllAsync(`
+    SELECT DISTINCT fecha
+    FROM sesiones_lectura
+    WHERE hora_fin IS NOT NULL
+    ORDER BY fecha DESC
+  `);
+  return {
+    metricas: {
+      ...metricas,
+      paginas_mes: Number(sesionesMes?.paginas_mes) || 0,
+      minutos_mes: Number(sesionesMes?.minutos_mes) || 0,
+      racha_dias: calcularRacha(diasLectura.map((item) => item.fecha)),
+    },
+    historial,
+  };
 }
 
 export async function getDeseos() {

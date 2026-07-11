@@ -6,12 +6,27 @@ import { obtenerCronicas } from '../database';
 import { Theme } from '../constants/theme';
 import { PremiumCard } from '../components/PremiumUI';
 
-const EMPTY = { terminados: 0, paginas_acumuladas: 0, abandonados: 0 };
+const EMPTY = {
+  terminados: 0,
+  paginas_acumuladas: 0,
+  abandonados: 0,
+  paginas_mes: 0,
+  minutos_mes: 0,
+  racha_dias: 0,
+};
 
 function formatearFecha(fecha) {
   if (!fecha) return 'fecha desconocida';
   const [year, month, day] = fecha.slice(0, 10).split('-');
   return `${day}/${month}/${year}`;
+}
+
+function formatearTiempo(minutos) {
+  const total = Math.max(0, Number(minutos) || 0);
+  if (total < 60) return `${total} min`;
+  const horas = Math.floor(total / 60);
+  const resto = total % 60;
+  return resto ? `${horas} h ${resto} min` : `${horas} h`;
 }
 
 function SmallMetric({ icon, value, label }) {
@@ -104,14 +119,14 @@ export default function CronicasScreen() {
             <View style={styles.featuredIcon}>
               <Ionicons name="document-text-outline" size={24} color={Theme.colors.accentBright} />
             </View>
-            <Text style={styles.featuredValue}>{metricas.paginas_acumuladas}</Text>
-            <Text style={styles.featuredLabel}>Páginas acumuladas</Text>
+            <Text style={styles.featuredValue}>{metricas.paginas_mes}</Text>
+            <Text style={styles.featuredLabel}>Páginas leídas este mes</Text>
             <View style={styles.featuredRule} />
           </PremiumCard>
 
           <View style={styles.smallMetricsRow}>
-            <SmallMetric icon="checkmark-done-outline" value={metricas.terminados} label="Terminados" />
-            <SmallMetric icon="close-circle-outline" value={metricas.abandonados} label="Abandonados" />
+            <SmallMetric icon="time-outline" value={formatearTiempo(metricas.minutos_mes)} label="Tiempo este mes" />
+            <SmallMetric icon="flame-outline" value={metricas.racha_dias} label={metricas.racha_dias === 1 ? 'Día seguido' : 'Días seguidos'} />
           </View>
 
           <Text style={styles.historyTitle}>Historial</Text>

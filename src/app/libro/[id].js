@@ -15,7 +15,15 @@ import {
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-import { actualizarLibro, eliminarLibro, obtenerLibroPorId } from '../../database';
+import {
+  actualizarLibro,
+  actualizarProgreso,
+  eliminarLibro,
+  iniciarSesionLectura,
+  obtenerLibroPorId,
+  obtenerSesionActiva,
+  terminarSesionLectura,
+} from '../../database';
 import {
   descartarPortadaTemporal,
   obtenerFeedbackPortada,
@@ -38,6 +46,9 @@ export default function LibroDetalleScreen() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [editando, setEditando] = useState(false);
+  const [sesionActiva, setSesionActiva] = useState(null);
+  const [paginaSesion, setPaginaSesion] = useState('0');
+  const [procesandoSesion, setProcesandoSesion] = useState(false);
 
   const cargarLibro = useCallback(async (isActive = () => isMountedRef.current) => {
     if (isActive()) setLoading(true);
@@ -50,6 +61,7 @@ export default function LibroDetalleScreen() {
         ]);
         return;
       }
+      const sesion = await obtenerSesionActiva(encontrado.uuid);
       if (!isActive()) return;
       setLibro({
         ...encontrado,
@@ -57,6 +69,8 @@ export default function LibroDetalleScreen() {
         pagina_actual: String(encontrado.pagina_actual ?? 0),
         notas: encontrado.notas || '',
       });
+      setSesionActiva(sesion);
+      setPaginaSesion(String(encontrado.pagina_actual ?? 0));
     } catch (error) {
       console.error(error);
       if (isActive()) Alert.alert('Error', 'No se pudo cargar la ficha del libro.');
@@ -193,6 +207,47 @@ export default function LibroDetalleScreen() {
     await cargarLibro();
   }
 
+  async function alternarSesionLectura() {
+    if (procesandoSesion) return;
+    const paginaActual = Number(paginaSesion);
+    if (!Number.isInteger(paginaActual) || paginaActual < 0) {
+      Alert.alert('Página inválida', 'Ingresa la página actual antes de terminar la sesión.');
+      return;
+    }
+    const total = libro.paginas_totales === '' ? null : Number(libro.paginas_totales);
+    if (total !== null && paginaActual > total) {
+      Alert.alert('Página inválida', 'La página actual no puede superar las páginas totales del libro.');
+      return;
+    }
+
+    setProcesandoSesion(true);
+    try {
+      if (!sesionActiva) {
+        const sesion = await iniciarSesionLectura(libro.uuid, paginaActual);
+        if (!isMountedRef.current) return;
+        setSesionActiva(sesion);
+        Alert.alert('Sesión iniciada', 'El tiempo de lectura comenzó a registrarse en este dispositivo.');
+      } else {
+        const sesionTerminada = await terminarSesionLectura(libro.uuid, paginaActual);
+        await actualizarProgreso(libro.id, paginaActual, libro.estado);
+        if (!isMountedRef.current) return;
+        setSesionActiva(null);
+        setLibro((actual) => ({ ...actual, pagina_actual: String(paginaActual) }));
+        Alert.alert(
+          'Sesión terminada',
+          `Leíste ${sesionTerminada.paginas_leidas} páginas durante ${sesionTerminada.minutos} minutos.`
+        );
+      }
+    } catch (error) {
+      console.error(error);
+      if (isMountedRef.current) {
+        Alert.alert('No se pudo registrar la sesión', error.message || 'Inténtalo nuevamente.');
+      }
+    } finally {
+      if (isMountedRef.current) setProcesandoSesion(false);
+    }
+  }
+
   function confirmarEliminacion() {
     Alert.alert(
       'Eliminar libro',
@@ -248,6 +303,50 @@ export default function LibroDetalleScreen() {
             <Text style={styles.coverButtonText}>PEGAR IMAGEN</Text>
           </Pressable>
         </View> : null}
+
+        <PremiumCard style={[styles.readCard, styles.sessionCard]}>
+          <View style={styles.sessionHeading}>
+            <View style={[styles.sessionIcon, sesionActiva && styles.sessionIconActive]}>
+              <Ionicons
+                name={sesionActiva ? 'timer' : 'timer-outline'}
+                size={22}
+                color={sesionActiva ? Theme.colors.accentInteractive : Theme.colors.textSecondary}
+              />
+            </View>
+            <View style={styles.sessionCopy}>
+              <Text style={styles.sessionTitle}>{sesionActiva ? 'Sesión en curso' : 'Sesión de lectura'}</Text>
+              <Text style={styles.sessionHelp}>
+                {sesionActiva ? 'Actualiza la página alcanzada antes de terminar.' : 'Registra tiempo y páginas leídas.'}
+              </Text>
+            </View>
+          </View>
+          {sesionActiva ? (
+            <View style={styles.sessionPageRow}>
+              <Text style={styles.readLabel}>PÁGINA ACTUAL</Text>
+              <TextInput
+                value={paginaSesion}
+                onChangeText={(value) => setPaginaSesion(value.replace(/\D/g, ''))}
+                style={styles.sessionPageInput}
+                keyboardType="number-pad"
+                accessibilityLabel="Página alcanzada en la sesión"
+              />
+            </View>
+          ) : null}
+          <PremiumButton
+            style={styles.sessionButton}
+            onPress={alternarSesionLectura}
+            disabled={procesandoSesion}
+          >
+            {procesandoSesion ? (
+              <ActivityIndicator color={Theme.colors.textPrimary} />
+            ) : (
+              <>
+                <Ionicons name={sesionActiva ? 'stop' : 'play'} size={18} color={Theme.colors.textPrimary} />
+                <Text style={styles.saveText}>{sesionActiva ? 'TERMINAR SESIÓN' : 'INICIAR SESIÓN DE LECTURA'}</Text>
+              </>
+            )}
+          </PremiumButton>
+        </PremiumCard>
 
         {editando ? <>
         <PremiumCard style={styles.card}>
@@ -346,6 +445,16 @@ const styles = StyleSheet.create({
   museumTitle: { color: Theme.colors.textPrimary, fontFamily: Theme.typography.families.interfaceSemiBold, ...Theme.typography.display, textAlign: 'center' },
   museumAuthor: { marginTop: Theme.spacing.sm, color: Theme.colors.textSecondary, fontFamily: Theme.typography.families.interface, ...Theme.typography.body, textAlign: 'center' },
   readCard: { width: '100%', marginBottom: Theme.spacing.lg },
+  sessionCard: { backgroundColor: Theme.colors.surfaceElevated },
+  sessionHeading: { flexDirection: 'row', alignItems: 'center', gap: Theme.spacing.md },
+  sessionIcon: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center', backgroundColor: Theme.colors.surface, borderRadius: Theme.radii.pill },
+  sessionIconActive: { backgroundColor: Theme.colors.accentGlow, borderWidth: 1, borderColor: Theme.colors.accentStroke },
+  sessionCopy: { flex: 1 },
+  sessionTitle: { color: Theme.colors.textPrimary, fontFamily: Theme.typography.families.interfaceSemiBold, ...Theme.typography.cardTitle },
+  sessionHelp: { marginTop: Theme.spacing.xs, color: Theme.colors.textSecondary, fontFamily: Theme.typography.families.interface, ...Theme.typography.secondary },
+  sessionPageRow: { flexDirection: 'row', alignItems: 'center', marginTop: Theme.spacing.lg },
+  sessionPageInput: { width: 88, minHeight: 44, marginLeft: 'auto', paddingHorizontal: Theme.spacing.md, color: Theme.colors.textPrimary, fontFamily: Theme.typography.families.interfaceMedium, ...Theme.typography.body, textAlign: 'center', backgroundColor: Theme.colors.surface, borderWidth: 1, borderColor: Theme.colors.strokeFocus, borderRadius: Theme.radii.md },
+  sessionButton: { width: '100%', marginTop: Theme.spacing.lg },
   readRow: { minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: Theme.spacing.lg },
   readLabel: { width: 90, color: Theme.colors.textTertiary, fontFamily: Theme.typography.families.interfaceMedium, ...Theme.typography.label, textTransform: 'uppercase' },
   readValue: { flex: 1, color: Theme.colors.textPrimary, fontFamily: Theme.typography.families.interface, ...Theme.typography.body, textAlign: 'right' },

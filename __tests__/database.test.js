@@ -15,19 +15,20 @@ function loadSubject() {
 }
 
 describe('integridad de database.js', () => {
-  test('aplica migraciones hasta user_version 3 y crea etiquetas, FTS5 e índices', async () => {
+  test('aplica migraciones hasta user_version 4 y crea sesiones, etiquetas, FTS5 e índices', async () => {
     const { database, sqlite } = loadSubject();
 
     await database.inicializarBaseDeDatos();
 
     const state = sqlite.__getState();
-    expect(state.userVersion).toBe(3);
+    expect(state.userVersion).toBe(4);
     expect([...state.tables]).toEqual(expect.arrayContaining([
       'mis_libros',
       'lista_compras',
       'etiquetas',
       'libro_etiquetas',
       'mis_libros_fts',
+      'sesiones_lectura',
     ]));
     expect([...state.columns.mis_libros]).toEqual(expect.arrayContaining(['fecha_fin', 'uuid']));
     expect([...state.columns.lista_compras]).toContain('uuid');
@@ -37,12 +38,50 @@ describe('integridad de database.js', () => {
       'idx_mis_libros_estado',
       'idx_mis_libros_fecha_fin',
       'idx_libro_etiquetas_etiqueta',
+      'idx_sesiones_fecha',
+      'idx_sesiones_libro',
+      'idx_sesion_activa_por_libro',
     ]));
     expect([...state.triggers]).toEqual(expect.arrayContaining([
       'mis_libros_fts_insert',
       'mis_libros_fts_delete',
       'mis_libros_fts_update',
     ]));
+  });
+
+  test('registra una sesión, calcula páginas y expone métricas mensuales reales', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-07-11T14:00:00.000Z'));
+    try {
+      const { database } = loadSubject();
+      await database.inicializarBaseDeDatos();
+      const bookId = await database.insertarLibro({
+        titulo: 'Lectura medida',
+        autor: 'Autora',
+        paginas_totales: 300,
+        pagina_actual: 40,
+        estado: 'leyendo',
+      });
+      const book = await database.obtenerLibroPorId(bookId);
+
+      const active = await database.iniciarSesionLectura(book.uuid, 40);
+      expect(active).toMatchObject({ libro_uuid: book.uuid, hora_fin: null, paginas_leidas: 40 });
+      await expect(database.obtenerSesionActiva(book.uuid)).resolves.toMatchObject({ id: active.id });
+
+      jest.setSystemTime(new Date('2026-07-11T14:45:00.000Z'));
+      const finished = await database.terminarSesionLectura(book.uuid, 65);
+      expect(finished).toMatchObject({ paginas_leidas: 25, minutos: 45 });
+      await expect(database.obtenerSesionActiva(book.uuid)).resolves.toBeNull();
+
+      const chronicles = await database.obtenerCronicas();
+      expect(chronicles.metricas).toMatchObject({
+        paginas_mes: 25,
+        minutos_mes: 45,
+        racha_dias: 1,
+      });
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test('busca por prefijo con FTS5 y combina el filtro de etiquetas', async () => {
