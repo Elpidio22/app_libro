@@ -19,7 +19,13 @@ import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import { insertarLibro, obtenerLibroPorISBN } from '../database';
-import { descartarPortadaTemporal, optimizarYGuardarPortada, pegarPortadaDesdePortapapeles } from '../portadas';
+import {
+  descartarPortadaTemporal,
+  obtenerFeedbackPortada,
+  optimizarYGuardarPortada,
+  pegarPortadaDesdePortapapeles,
+  PortadaError,
+} from '../portadas';
 import { Theme } from '../constants/theme';
 import { PremiumButton } from '../components/PremiumUI';
 
@@ -241,21 +247,18 @@ export default function AltaLibroScreen() {
   }, []);
 
   async function seleccionarPortada() {
-    const permiso = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permiso.granted) {
-      Alert.alert('Permiso necesario', 'Necesitamos acceso a tus fotos para seleccionar una portada.');
-      return;
-    }
-
-    const resultado = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      allowsEditing: true,
-      aspect: [2, 3],
-      quality: 0.85,
-    });
-    if (resultado.canceled) return;
-
     try {
+      const permiso = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permiso.granted) {
+        throw new PortadaError('PERMISO_DENEGADO', 'No se concedió acceso a la galería.');
+      }
+      const resultado = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [2, 3],
+        quality: 0.85,
+      });
+      if (resultado.canceled) return;
       const asset = resultado.assets[0];
       const portadaOptimizada = await optimizarYGuardarPortada(asset.uri, { temporal: true });
       descartarPortadaTemporal(portadaTemporalRef.current);
@@ -266,7 +269,8 @@ export default function AltaLibroScreen() {
       }
     } catch (error) {
       console.error(error);
-      Alert.alert('No se pudo guardar la portada', 'Selecciona otra imagen e inténtalo nuevamente.');
+      const feedback = obtenerFeedbackPortada(error, 'No se pudo guardar la portada');
+      Alert.alert(feedback.titulo, feedback.mensaje);
     }
   }
 
@@ -285,7 +289,8 @@ export default function AltaLibroScreen() {
       actualizarCampo('portada_url', portada);
     } catch (error) {
       console.error(error);
-      Alert.alert('No se pudo pegar la portada', error.message || 'La imagen copiada no pudo procesarse.');
+      const feedback = obtenerFeedbackPortada(error, 'No se pudo pegar la portada');
+      Alert.alert(feedback.titulo, feedback.mensaje);
     }
   }
 
@@ -367,9 +372,36 @@ export default function AltaLibroScreen() {
     } catch (error) {
       console.error(error);
       const duplicado = String(error?.message).includes('UNIQUE');
-      if (isMountedRef.current) Alert.alert('No se pudo guardar', duplicado ? 'Ese ISBN ya existe en tu biblioteca.' : error.message);
+      if (isMountedRef.current) {
+        if (error?.codigo) {
+          const feedback = obtenerFeedbackPortada(error, 'No se pudo guardar la portada');
+          Alert.alert(feedback.titulo, feedback.mensaje);
+        } else {
+          Alert.alert('No se pudo guardar', duplicado ? 'Ese ISBN ya existe en tu biblioteca.' : error.message);
+        }
+      }
     } finally {
       if (isMountedRef.current) setSaving(false);
+    }
+  }
+
+  async function solicitarPermisoCamara() {
+    try {
+      const resultado = await requestPermission();
+      if (!resultado.granted && isMountedRef.current) {
+        Alert.alert(
+          'Permiso de cámara denegado',
+          'No podemos abrir el escáner sin acceso a la cámara. Puedes habilitar el permiso desde los ajustes del dispositivo o usar la carga manual.'
+        );
+      }
+    } catch (error) {
+      console.error(error);
+      if (isMountedRef.current) {
+        Alert.alert(
+          'No se pudo solicitar el permiso',
+          'El sistema no pudo abrir la solicitud de cámara. Usa la carga manual o inténtalo nuevamente.'
+        );
+      }
     }
   }
 
@@ -449,7 +481,7 @@ export default function AltaLibroScreen() {
   function ContenidoEscaner() {
     if (!permission) return <View style={styles.center}><ActivityIndicator color={Theme.colors.accent} /></View>;
     if (!permission.granted) {
-      return <View style={styles.center}><Ionicons name="camera-outline" size={56} color={Theme.colors.accent} /><Text style={styles.permissionTitle}>Permiso de cámara</Text><Text style={styles.help}>La cámara solo se utiliza para leer el ISBN.</Text><PremiumButton style={styles.primaryButton} label="CONCEDER PERMISO" onPress={requestPermission} /></View>;
+      return <View style={styles.center}><Ionicons name="camera-outline" size={56} color={Theme.colors.accent} /><Text style={styles.permissionTitle}>Permiso de cámara</Text><Text style={styles.help}>La cámara solo se utiliza para leer el ISBN.</Text><PremiumButton style={styles.primaryButton} label="CONCEDER PERMISO" onPress={solicitarPermisoCamara} /></View>;
     }
     if (confirmando) return FormularioLibro({ permitePortadaLocal: false });
 

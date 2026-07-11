@@ -18,8 +18,10 @@ import * as ImagePicker from 'expo-image-picker';
 import { actualizarLibro, eliminarLibro, obtenerLibroPorId } from '../../database';
 import {
   descartarPortadaTemporal,
+  obtenerFeedbackPortada,
   optimizarYGuardarPortada,
   pegarPortadaDesdePortapapeles,
+  PortadaError,
 } from '../../portadas';
 import { Theme } from '../../constants/theme';
 import { PremiumButton, PremiumCard } from '../../components/PremiumUI';
@@ -91,12 +93,11 @@ export default function LibroDetalleScreen() {
   }
 
   async function seleccionarPortada() {
-    const permiso = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permiso.granted) {
-      Alert.alert('Permiso necesario', 'Necesitamos acceso a tus fotos para cambiar la portada.');
-      return;
-    }
     try {
+      const permiso = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permiso.granted) {
+        throw new PortadaError('PERMISO_DENEGADO', 'No se concedió acceso a la galería.');
+      }
       const resultado = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
         allowsEditing: true,
@@ -110,7 +111,8 @@ export default function LibroDetalleScreen() {
       cambiarCampo('portada_url', portada);
     } catch (error) {
       console.error(error);
-      Alert.alert('Portada no disponible', error.message || 'No se pudo procesar la imagen seleccionada.');
+      const feedback = obtenerFeedbackPortada(error, 'Portada no disponible');
+      Alert.alert(feedback.titulo, feedback.mensaje);
     }
   }
 
@@ -129,7 +131,8 @@ export default function LibroDetalleScreen() {
       cambiarCampo('portada_url', portada);
     } catch (error) {
       console.error(error);
-      Alert.alert('No se pudo pegar la portada', error.message || 'La imagen copiada no pudo procesarse.');
+      const feedback = obtenerFeedbackPortada(error, 'No se pudo pegar la portada');
+      Alert.alert(feedback.titulo, feedback.mensaje);
     }
   }
 
@@ -170,7 +173,14 @@ export default function LibroDetalleScreen() {
       if (isMountedRef.current) setEditando(false);
     } catch (error) {
       console.error(error);
-      if (isMountedRef.current) Alert.alert('No se pudo guardar', error.message || 'Ocurrió un error al actualizar el libro.');
+      if (isMountedRef.current) {
+        if (error?.codigo) {
+          const feedback = obtenerFeedbackPortada(error, 'No se pudo guardar la portada');
+          Alert.alert(feedback.titulo, feedback.mensaje);
+        } else {
+          Alert.alert('No se pudo guardar', error.message || 'Ocurrió un error al actualizar el libro.');
+        }
+      }
     } finally {
       if (isMountedRef.current) setSaving(false);
     }

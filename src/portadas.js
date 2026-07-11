@@ -15,6 +15,56 @@ export class PortadaError extends Error {
   }
 }
 
+const FEEDBACK_PORTADA = Object.freeze({
+  SIN_ESPACIO: Object.freeze({
+    titulo: 'Almacenamiento lleno',
+    mensaje: 'No hay espacio suficiente en el dispositivo para guardar la portada. Libera espacio e inténtalo nuevamente.',
+  }),
+  PERMISO_DENEGADO: Object.freeze({
+    titulo: 'Permiso denegado',
+    mensaje: 'La aplicación no tiene permiso para acceder o guardar la imagen. Revisa los permisos del dispositivo.',
+  }),
+  FORMATO_INVALIDO: Object.freeze({
+    titulo: 'Imagen no compatible',
+    mensaje: 'El archivo seleccionado no es una imagen válida o utiliza un formato no compatible.',
+  }),
+  PROCESAMIENTO_FALLIDO: Object.freeze({
+    titulo: 'No se pudo procesar la portada',
+    mensaje: 'La imagen no pudo prepararse para guardarla. Prueba con otra portada.',
+  }),
+  TEMPORAL_NO_ENCONTRADO: Object.freeze({
+    titulo: 'La portada ya no está disponible',
+    mensaje: 'El archivo temporal fue eliminado antes de guardar. Selecciona la portada nuevamente.',
+  }),
+  CONFIRMACION_FALLIDA: Object.freeze({
+    titulo: 'No se pudo guardar la portada',
+    mensaje: 'La imagen fue seleccionada, pero no pudo moverse al almacenamiento permanente.',
+  }),
+  PORTAPAPELES_FALLIDO: Object.freeze({
+    titulo: 'No se pudo leer la imagen copiada',
+    mensaje: 'El contenido del portapapeles no pudo convertirse en una portada. Copia otra imagen e inténtalo nuevamente.',
+  }),
+});
+
+export function obtenerFeedbackPortada(error, tituloFallback = 'Portada no disponible') {
+  const feedback = FEEDBACK_PORTADA[error?.codigo];
+  if (feedback) return feedback;
+  return {
+    titulo: tituloFallback,
+    mensaje: error instanceof PortadaError
+      ? error.message
+      : 'Ocurrió un error inesperado al trabajar con la portada. Inténtalo nuevamente.',
+  };
+}
+
+function clasificarErrorFilesystem(error, fallback = 'PROCESAMIENTO_FALLIDO') {
+  const message = String(error?.message || error);
+  if (/space|ENOSPC/i.test(message)) return 'SIN_ESPACIO';
+  if (/permission|denied|EACCES/i.test(message)) return 'PERMISO_DENEGADO';
+  if (/decode|format|image/i.test(message)) return 'FORMATO_INVALIDO';
+  return fallback;
+}
+
 function asegurarDirectorioPortadas() {
   if (!PORTADAS_DIRECTORY.exists) {
     PORTADAS_DIRECTORY.create({ idempotent: true, intermediates: true });
@@ -36,8 +86,9 @@ function obtenerAncho(uri) {
 function borrarSiExiste(archivo) {
   try {
     if (archivo?.exists) archivo.delete();
-  } catch {
-    // La limpieza de caché nunca debe interrumpir el guardado.
+  } catch (error) {
+    // La limpieza de caché no interrumpe el guardado, pero deja diagnóstico.
+    console.warn('No se pudo limpiar un archivo temporal de portada.', error);
   }
 }
 
@@ -88,14 +139,7 @@ export async function optimizarYGuardarPortada(uriOriginal, { temporal = false }
     new File(resultadoTemporal.uri).copy(destino);
     return destino.uri;
   } catch (error) {
-    const message = String(error?.message || error);
-    const codigo = /space|ENOSPC/i.test(message)
-      ? 'SIN_ESPACIO'
-      : /permission|denied|EACCES/i.test(message)
-        ? 'PERMISO_DENEGADO'
-        : /decode|format|image/i.test(message)
-          ? 'FORMATO_INVALIDO'
-          : 'PROCESAMIENTO_FALLIDO';
+    const codigo = clasificarErrorFilesystem(error);
     console.error('No se pudo procesar la portada.', { codigo, uri: uriOriginal, error });
     throw new PortadaError(codigo, 'No se pudo procesar o almacenar la portada.', error);
   } finally {
@@ -120,7 +164,11 @@ export function confirmarPortadaTemporal(uri) {
   } catch (error) {
     borrarSiExiste(destino);
     console.error('No se pudo confirmar la portada temporal.', error);
-    throw new PortadaError('CONFIRMACION_FALLIDA', 'No se pudo confirmar la portada seleccionada.', error);
+    throw new PortadaError(
+      clasificarErrorFilesystem(error, 'CONFIRMACION_FALLIDA'),
+      'No se pudo confirmar la portada seleccionada.',
+      error
+    );
   }
 }
 
@@ -140,6 +188,7 @@ export async function pegarPortadaDesdePortapapeles({ temporal = false } = {}) {
     return optimizarYGuardarPortada(imagen.data, { temporal });
   } catch (error) {
     console.error('No se pudo leer una portada desde el portapapeles.', error);
+    if (error instanceof PortadaError) throw error;
     throw new PortadaError('PORTAPAPELES_FALLIDO', 'No se pudo leer la imagen copiada.', error);
   }
 }
