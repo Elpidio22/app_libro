@@ -19,6 +19,7 @@ const icons = {
   scanner: ['barcode', 'barcode-outline'],
   deseos: ['eye', 'eye-outline'],
   cronicas: ['stats-chart', 'stats-chart-outline'],
+  ajustes: ['settings', 'settings-outline'],
 };
 
 export default function RootLayout() {
@@ -97,6 +98,7 @@ export default function RootLayout() {
         <Tabs.Screen name="scanner" options={{ title: 'Añadir', headerTitle: 'Añadir un libro' }} />
         <Tabs.Screen name="deseos" options={{ title: 'Deseos', headerTitle: 'La cacería' }} />
         <Tabs.Screen name="cronicas" options={{ title: 'Crónicas', headerTitle: 'Crónicas' }} />
+        <Tabs.Screen name="ajustes" options={{ title: 'Ajustes', headerTitle: 'Ajustes' }} />
         <Tabs.Screen name="libro/[id]" options={{ href: null, title: 'Ficha del libro' }} />
       </Tabs>
     </>
