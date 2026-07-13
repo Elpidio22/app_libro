@@ -154,6 +154,76 @@ describe('integridad de database.js', () => {
     });
   });
 
+  test('exporta un backup versión 4 con todas las entidades relacionadas', async () => {
+    const { database, fileSystem } = loadSubject();
+    await database.inicializarBaseDeDatos();
+    const bookId = await database.insertarLibro({
+      titulo: 'Libro respaldado', autor: 'Autora', paginas_totales: 180,
+      pagina_actual: 12, estado: 'leyendo',
+    });
+    const book = await database.obtenerLibroPorId(bookId);
+    await database.addDeseo({ titulo: 'Deseo respaldado', prioridad: 'alta' });
+    const etiqueta = await database.crearEtiqueta('Favoritos');
+    await database.asignarEtiquetaALibro(book.uuid, etiqueta.uuid);
+    await database.iniciarSesionLectura(book.uuid, 12);
+
+    const backupUri = await database.exportarBackupJSON();
+    const backup = JSON.parse(await new fileSystem.File(backupUri).text());
+
+    expect(backup).toMatchObject({ tipo: 'mi-biblioteca-backup', version: 4 });
+    expect(backup.libros).toEqual([expect.objectContaining({ uuid: book.uuid })]);
+    expect(backup.lista_compras).toEqual([expect.objectContaining({ titulo: 'Deseo respaldado' })]);
+    expect(backup.etiquetas).toEqual([expect.objectContaining({ uuid: etiqueta.uuid, nombre: 'Favoritos' })]);
+    expect(backup.libro_etiquetas).toEqual([
+      expect.objectContaining({ libro_uuid: book.uuid, etiqueta_uuid: etiqueta.uuid }),
+    ]);
+    expect(backup.sesiones_lectura).toEqual([
+      expect.objectContaining({ libro_uuid: book.uuid, hora_fin: null, paginas_leidas: 12 }),
+    ]);
+  });
+
+  test('restaura todas las entidades sin duplicarlas al repetir la importación', async () => {
+    const { database, sqlite, fileSystem, documentPicker } = loadSubject();
+    await database.inicializarBaseDeDatos();
+    const backupFile = new fileSystem.File(fileSystem.Paths.cache, 'backup-completo.json');
+    backupFile.create();
+    const bookUuid = 'aaaaaaaa-1234-4234-8234-123456789abc';
+    const wishUuid = 'bbbbbbbb-1234-4234-8234-123456789abc';
+    const tagUuid = 'cccccccc-1234-4234-8234-123456789abc';
+    backupFile.write(JSON.stringify({
+      tipo: 'mi-biblioteca-backup', version: 4,
+      libros: [{
+        uuid: bookUuid, titulo: 'Libro completo', autor: 'Autor', paginas_totales: 200,
+        pagina_actual: 30, estado: 'leyendo', fecha_agregado: '2026-07-01T00:00:00.000Z',
+      }],
+      lista_compras: [{
+        uuid: wishUuid, titulo: 'Deseo completo', prioridad: 'media',
+        fecha_agregado: '2026-07-02T00:00:00.000Z',
+      }],
+      etiquetas: [{ uuid: tagUuid, nombre: 'Ensayo' }],
+      libro_etiquetas: [{ libro_uuid: bookUuid, etiqueta_uuid: tagUuid }],
+      sesiones_lectura: [{
+        libro_uuid: bookUuid, fecha: '2026-07-10', hora_inicio: '2026-07-10T10:00:00.000Z',
+        hora_fin: '2026-07-10T10:30:00.000Z', paginas_leidas: 18,
+      }],
+    }));
+    documentPicker.__setResult({ canceled: false, assets: [{ uri: backupFile.uri }] });
+
+    await database.importarBackupJSON();
+    await database.importarBackupJSON();
+
+    const state = sqlite.__getState();
+    expect(state.misLibros).toHaveLength(1);
+    expect(state.listaCompras).toHaveLength(1);
+    expect(state.etiquetas).toEqual([expect.objectContaining({ uuid: tagUuid, nombre: 'Ensayo' })]);
+    expect(state.libroEtiquetas).toEqual([
+      expect.objectContaining({ libro_uuid: bookUuid, etiqueta_uuid: tagUuid }),
+    ]);
+    expect(state.sesionesLectura).toEqual([
+      expect.objectContaining({ libro_uuid: bookUuid, paginas_leidas: 18 }),
+    ]);
+  });
+
   test('revierte INSERT y conserva el deseo si falla el DELETE final', async () => {
     const { database, sqlite } = loadSubject();
     await database.inicializarBaseDeDatos();

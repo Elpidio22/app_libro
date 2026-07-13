@@ -110,6 +110,8 @@ module.exports = {
       },
       misLibros: rowsFor(databaseInstance, 'SELECT * FROM mis_libros ORDER BY id'),
       listaCompras: rowsFor(databaseInstance, 'SELECT * FROM lista_compras ORDER BY id'),
+      etiquetas: rowsFor(databaseInstance, 'SELECT * FROM etiquetas ORDER BY nombre'),
+      libroEtiquetas: rowsFor(databaseInstance, 'SELECT * FROM libro_etiquetas ORDER BY libro_uuid, etiqueta_uuid'),
       sesionesLectura: rowsFor(databaseInstance, 'SELECT * FROM sesiones_lectura ORDER BY id'),
     };
   },
