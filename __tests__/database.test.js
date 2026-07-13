@@ -15,13 +15,13 @@ function loadSubject() {
 }
 
 describe('integridad de database.js', () => {
-  test('aplica migraciones hasta user_version 4 y crea sesiones, etiquetas, FTS5 e índices', async () => {
+  test('aplica migraciones hasta user_version 5 y crea sesiones, etiquetas, FTS5 e índices', async () => {
     const { database, sqlite } = loadSubject();
 
     await database.inicializarBaseDeDatos();
 
     const state = sqlite.__getState();
-    expect(state.userVersion).toBe(4);
+    expect(state.userVersion).toBe(5);
     expect([...state.tables]).toEqual(expect.arrayContaining([
       'mis_libros',
       'lista_compras',
@@ -41,6 +41,7 @@ describe('integridad de database.js', () => {
       'idx_sesiones_fecha',
       'idx_sesiones_libro',
       'idx_sesion_activa_por_libro',
+      'idx_sesiones_libro_hora_inicio',
     ]));
     expect([...state.triggers]).toEqual(expect.arrayContaining([
       'mis_libros_fts_insert',
@@ -73,6 +74,17 @@ describe('integridad de database.js', () => {
       expect(finished).toMatchObject({ paginas_leidas: 25, minutos: 45 });
       await expect(database.obtenerSesionActiva(book.uuid)).resolves.toBeNull();
       await expect(database.obtenerLibroPorId(bookId)).resolves.toMatchObject({ pagina_actual: 65 });
+      const db = await database.getDatabase();
+      await expect(db.runAsync(
+        `INSERT INTO sesiones_lectura
+          (libro_uuid, fecha, hora_inicio, hora_fin, paginas_leidas)
+         VALUES (?, ?, ?, ?, ?)`,
+        book.uuid,
+        active.fecha,
+        active.hora_inicio,
+        finished.hora_fin,
+        25
+      )).rejects.toThrow(/UNIQUE/i);
 
       const chronicles = await database.obtenerCronicas();
       expect(chronicles.metricas).toMatchObject({
@@ -198,7 +210,7 @@ describe('integridad de database.js', () => {
     const backupUri = await database.exportarBackupJSON();
     const backup = JSON.parse(await new fileSystem.File(backupUri).text());
 
-    expect(backup).toMatchObject({ tipo: 'mi-biblioteca-backup', version: 4 });
+    expect(backup).toMatchObject({ tipo: 'mi-biblioteca-backup', version: 5 });
     expect(backup.libros).toEqual([expect.objectContaining({ uuid: book.uuid })]);
     expect(backup.lista_compras).toEqual([expect.objectContaining({ titulo: 'Deseo respaldado' })]);
     expect(backup.etiquetas).toEqual([expect.objectContaining({ uuid: etiqueta.uuid, nombre: 'Favoritos' })]);
@@ -219,7 +231,7 @@ describe('integridad de database.js', () => {
     const wishUuid = 'bbbbbbbb-1234-4234-8234-123456789abc';
     const tagUuid = 'cccccccc-1234-4234-8234-123456789abc';
     backupFile.write(JSON.stringify({
-      tipo: 'mi-biblioteca-backup', version: 4,
+      tipo: 'mi-biblioteca-backup', version: 5,
       libros: [{
         uuid: bookUuid, titulo: 'Libro completo', autor: 'Autor', paginas_totales: 200,
         pagina_actual: 30, estado: 'leyendo', fecha_agregado: '2026-07-01T00:00:00.000Z',

@@ -11,8 +11,8 @@ import {
 } from './portadas';
 
 const DATABASE_NAME = 'biblioteca.db';
-const BACKUP_VERSION = 4;
-const DATABASE_VERSION = 4;
+const BACKUP_VERSION = 5;
+const DATABASE_VERSION = 5;
 const ESTADOS_VALIDOS = ['quiero leer', 'leyendo', 'terminado', 'abandonado'];
 
 let databasePromise;
@@ -212,7 +212,7 @@ export async function inicializarBaseDeDatos() {
     version = 3;
   }
 
-  if (version < DATABASE_VERSION) {
+  if (version < 4) {
     await db.execAsync(`
       CREATE TABLE IF NOT EXISTS sesiones_lectura (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -227,6 +227,21 @@ export async function inicializarBaseDeDatos() {
       CREATE INDEX IF NOT EXISTS idx_sesiones_libro ON sesiones_lectura(libro_uuid);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_sesion_activa_por_libro
       ON sesiones_lectura(libro_uuid) WHERE hora_fin IS NULL;
+      PRAGMA user_version = 4;
+    `);
+    version = 4;
+  }
+
+  if (version < DATABASE_VERSION) {
+    await db.execAsync(`
+      DELETE FROM sesiones_lectura
+      WHERE id NOT IN (
+        SELECT MIN(id)
+        FROM sesiones_lectura
+        GROUP BY libro_uuid, hora_inicio
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_sesiones_libro_hora_inicio
+      ON sesiones_lectura(libro_uuid, hora_inicio);
       PRAGMA user_version = ${DATABASE_VERSION};
     `);
   }

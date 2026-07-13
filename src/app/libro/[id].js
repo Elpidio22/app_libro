@@ -44,6 +44,7 @@ export default function LibroDetalleScreen() {
   const scrollRef = useRef(null);
   const isMountedRef = useRef(false);
   const portadaTemporalRef = useRef(null);
+  const isProcessingTagsRef = useRef(false);
   const { id } = useLocalSearchParams();
   const router = useRouter();
   const [libro, setLibro] = useState(null);
@@ -222,7 +223,8 @@ export default function LibroDetalleScreen() {
   }
 
   async function alternarEtiqueta(etiqueta) {
-    if (procesandoEtiquetas) return;
+    if (isProcessingTagsRef.current) return;
+    isProcessingTagsRef.current = true;
     setProcesandoEtiquetas(true);
     try {
       if (etiquetasAsignadas.has(etiqueta.uuid)) {
@@ -246,13 +248,15 @@ export default function LibroDetalleScreen() {
         Alert.alert('No se pudo actualizar la etiqueta', error.message || 'Inténtalo nuevamente.');
       }
     } finally {
+      isProcessingTagsRef.current = false;
       if (isMountedRef.current) setProcesandoEtiquetas(false);
     }
   }
 
   async function agregarEtiqueta() {
     const nombre = nuevaEtiqueta.trim();
-    if (!nombre || procesandoEtiquetas) return;
+    if (!nombre || isProcessingTagsRef.current) return;
+    isProcessingTagsRef.current = true;
     setProcesandoEtiquetas(true);
     try {
       const etiqueta = await crearEtiqueta(nombre);
@@ -268,6 +272,7 @@ export default function LibroDetalleScreen() {
         Alert.alert('No se pudo crear la etiqueta', error.message || 'Inténtalo nuevamente.');
       }
     } finally {
+      isProcessingTagsRef.current = false;
       if (isMountedRef.current) setProcesandoEtiquetas(false);
     }
   }

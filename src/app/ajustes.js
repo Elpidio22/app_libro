@@ -7,6 +7,7 @@ import { PremiumButton, PremiumCard } from '../components/PremiumUI';
 
 export default function AjustesScreen() {
   const isMountedRef = useRef(true);
+  const isProcessingRef = useRef(false);
   const [accion, setAccion] = useState(null);
 
   useEffect(() => () => {
@@ -14,7 +15,8 @@ export default function AjustesScreen() {
   }, []);
 
   async function exportarBackup() {
-    if (accion) return;
+    if (isProcessingRef.current) return;
+    isProcessingRef.current = true;
     setAccion('exportar');
     try {
       await exportarBackupJSON();
@@ -33,20 +35,17 @@ export default function AjustesScreen() {
         );
       }
     } finally {
+      isProcessingRef.current = false;
       if (isMountedRef.current) setAccion(null);
     }
   }
 
   async function importarBackup() {
-    if (accion) return;
     setAccion('importar');
     try {
       const resultado = await importarBackupJSON();
       if (!isMountedRef.current) return;
-      if (resultado.cancelado) {
-        setAccion(null);
-        return;
-      }
+      if (resultado.cancelado) return;
       Alert.alert(
         'Respaldo importado',
         `${resultado.importados} ${resultado.importados === 1 ? 'libro fue procesado' : 'libros fueron procesados'}. Las coincidencias se actualizaron por UUID.`
@@ -60,19 +59,22 @@ export default function AjustesScreen() {
         );
       }
     } finally {
+      isProcessingRef.current = false;
       if (isMountedRef.current) setAccion(null);
     }
   }
 
   function confirmarImportacion() {
-    if (accion) return;
+    if (isProcessingRef.current) return;
+    isProcessingRef.current = true;
     Alert.alert(
       'Importar respaldo',
       'Esta operación fusionará el archivo con la biblioteca local. Los libros con el mismo UUID serán sobrescritos con la información del respaldo. Esta acción no se puede deshacer.',
       [
-        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Cancelar', style: 'cancel', onPress: () => { isProcessingRef.current = false; } },
         { text: 'Seleccionar archivo', style: 'destructive', onPress: importarBackup },
-      ]
+      ],
+      { cancelable: false }
     );
   }
 
