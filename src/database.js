@@ -335,6 +335,18 @@ export async function obtenerEtiquetas() {
   `);
 }
 
+export async function obtenerEtiquetasDeLibro(libroUuid) {
+  const db = await getDatabase();
+  return db.getAllAsync(
+    `SELECT e.uuid, e.nombre
+     FROM etiquetas e
+     JOIN libro_etiquetas le ON le.etiqueta_uuid = e.uuid
+     WHERE le.libro_uuid = ?
+     ORDER BY e.nombre COLLATE NOCASE ASC`,
+    String(libroUuid)
+  );
+}
+
 export async function crearEtiqueta(nombre) {
   const nombreLimpio = String(nombre || '').trim();
   if (!nombreLimpio) throw new Error('El nombre de la etiqueta es obligatorio.');

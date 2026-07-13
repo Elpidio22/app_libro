@@ -16,11 +16,16 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import {
+  asignarEtiquetaALibro,
   actualizarLibro,
+  crearEtiqueta,
   eliminarLibro,
   iniciarSesionLectura,
+  obtenerEtiquetas,
+  obtenerEtiquetasDeLibro,
   obtenerLibroPorId,
   obtenerSesionActiva,
+  quitarEtiquetaDelLibro,
   terminarSesionLectura,
 } from '../../database';
 import {
@@ -48,6 +53,10 @@ export default function LibroDetalleScreen() {
   const [sesionActiva, setSesionActiva] = useState(null);
   const [paginaSesion, setPaginaSesion] = useState('0');
   const [procesandoSesion, setProcesandoSesion] = useState(false);
+  const [etiquetas, setEtiquetas] = useState([]);
+  const [etiquetasAsignadas, setEtiquetasAsignadas] = useState(new Set());
+  const [nuevaEtiqueta, setNuevaEtiqueta] = useState('');
+  const [procesandoEtiquetas, setProcesandoEtiquetas] = useState(false);
 
   const cargarLibro = useCallback(async (isActive = () => isMountedRef.current) => {
     if (isActive()) setLoading(true);
@@ -60,7 +69,11 @@ export default function LibroDetalleScreen() {
         ]);
         return;
       }
-      const sesion = await obtenerSesionActiva(encontrado.uuid);
+      const [sesion, todasLasEtiquetas, etiquetasDelLibro] = await Promise.all([
+        obtenerSesionActiva(encontrado.uuid),
+        obtenerEtiquetas(),
+        obtenerEtiquetasDeLibro(encontrado.uuid),
+      ]);
       if (!isActive()) return;
       setLibro({
         ...encontrado,
@@ -70,6 +83,8 @@ export default function LibroDetalleScreen() {
       });
       setSesionActiva(sesion);
       setPaginaSesion(String(encontrado.pagina_actual ?? 0));
+      setEtiquetas(todasLasEtiquetas);
+      setEtiquetasAsignadas(new Set(etiquetasDelLibro.map((etiqueta) => etiqueta.uuid)));
     } catch (error) {
       console.error(error);
       if (isActive()) Alert.alert('Error', 'No se pudo cargar la ficha del libro.');
@@ -204,6 +219,57 @@ export default function LibroDetalleScreen() {
     portadaTemporalRef.current = null;
     setEditando(false);
     await cargarLibro();
+  }
+
+  async function alternarEtiqueta(etiqueta) {
+    if (procesandoEtiquetas) return;
+    setProcesandoEtiquetas(true);
+    try {
+      if (etiquetasAsignadas.has(etiqueta.uuid)) {
+        await quitarEtiquetaDelLibro(libro.uuid, etiqueta.uuid);
+        if (isMountedRef.current) {
+          setEtiquetasAsignadas((actuales) => {
+            const siguientes = new Set(actuales);
+            siguientes.delete(etiqueta.uuid);
+            return siguientes;
+          });
+        }
+      } else {
+        await asignarEtiquetaALibro(libro.uuid, etiqueta.uuid);
+        if (isMountedRef.current) {
+          setEtiquetasAsignadas((actuales) => new Set(actuales).add(etiqueta.uuid));
+        }
+      }
+    } catch (error) {
+      console.error(error);
+      if (isMountedRef.current) {
+        Alert.alert('No se pudo actualizar la etiqueta', error.message || 'Inténtalo nuevamente.');
+      }
+    } finally {
+      if (isMountedRef.current) setProcesandoEtiquetas(false);
+    }
+  }
+
+  async function agregarEtiqueta() {
+    const nombre = nuevaEtiqueta.trim();
+    if (!nombre || procesandoEtiquetas) return;
+    setProcesandoEtiquetas(true);
+    try {
+      const etiqueta = await crearEtiqueta(nombre);
+      await asignarEtiquetaALibro(libro.uuid, etiqueta.uuid);
+      const todasLasEtiquetas = await obtenerEtiquetas();
+      if (!isMountedRef.current) return;
+      setEtiquetas(todasLasEtiquetas);
+      setEtiquetasAsignadas((actuales) => new Set(actuales).add(etiqueta.uuid));
+      setNuevaEtiqueta('');
+    } catch (error) {
+      console.error(error);
+      if (isMountedRef.current) {
+        Alert.alert('No se pudo crear la etiqueta', error.message || 'Inténtalo nuevamente.');
+      }
+    } finally {
+      if (isMountedRef.current) setProcesandoEtiquetas(false);
+    }
   }
 
   async function alternarSesionLectura() {
@@ -371,6 +437,59 @@ export default function LibroDetalleScreen() {
           <TextInput value={libro.notas} onFocus={(event) => mantenerInputVisible(event, 150)} onChangeText={(value) => cambiarCampo('notas', value)} style={[styles.input, styles.notes]} multiline textAlignVertical="top" placeholder="Escribe aquí tu crónica…" placeholderTextColor={Theme.colors.textTertiary} />
         </PremiumCard>
 
+        <PremiumCard style={styles.card}>
+          <Text style={styles.sectionTitle}>Etiquetas</Text>
+          <Text style={styles.tagHelp}>Organiza este libro y úsalo después como filtro en la biblioteca.</Text>
+          <View style={styles.tags}>
+            {etiquetas.map((etiqueta) => {
+              const asignada = etiquetasAsignadas.has(etiqueta.uuid);
+              return (
+                <Pressable
+                  key={etiqueta.uuid}
+                  onPress={() => alternarEtiqueta(etiqueta)}
+                  disabled={procesandoEtiquetas}
+                  style={[styles.tagChip, asignada && styles.tagChipActive]}
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: asignada, disabled: procesandoEtiquetas }}
+                >
+                  {asignada ? <Ionicons name="checkmark" size={15} color={Theme.colors.accentInteractive} /> : null}
+                  <Text style={[styles.tagText, asignada && styles.tagTextActive]}>{etiqueta.nombre}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          <View style={styles.newTagRow}>
+            <TextInput
+              value={nuevaEtiqueta}
+              onChangeText={setNuevaEtiqueta}
+              onFocus={mantenerInputVisible}
+              onSubmitEditing={agregarEtiqueta}
+              editable={!procesandoEtiquetas}
+              returnKeyType="done"
+              maxLength={40}
+              style={[styles.input, styles.newTagInput]}
+              placeholder="Nueva etiqueta"
+              placeholderTextColor={Theme.colors.placeholder}
+              accessibilityLabel="Nombre de la nueva etiqueta"
+            />
+            <Pressable
+              onPress={agregarEtiqueta}
+              disabled={!nuevaEtiqueta.trim() || procesandoEtiquetas}
+              style={({ pressed }) => [
+                styles.addTagButton,
+                (!nuevaEtiqueta.trim() || procesandoEtiquetas) && styles.disabled,
+                pressed && styles.addTagButtonPressed,
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Crear y asignar etiqueta"
+            >
+              {procesandoEtiquetas
+                ? <ActivityIndicator size="small" color={Theme.colors.textPrimary} />
+                : <Ionicons name="add" size={22} color={Theme.colors.textPrimary} />}
+            </Pressable>
+          </View>
+        </PremiumCard>
+
         <PremiumButton style={styles.saveButton} onPress={guardar} disabled={saving}>
           {saving ? <ActivityIndicator color={Theme.colors.textPrimary} /> : <Text style={styles.saveText}>GUARDAR CRÓNICA</Text>}
         </PremiumButton>
@@ -425,6 +544,16 @@ const styles = StyleSheet.create({
   label: { color: Theme.colors.textSecondary, fontFamily: Theme.typography.families.interfaceMedium, ...Theme.typography.label, marginTop: Theme.spacing.md, marginBottom: Theme.spacing.sm },
   input: { minHeight: 48, paddingHorizontal: Theme.spacing.md, color: Theme.colors.textPrimary, fontFamily: Theme.typography.families.interface, ...Theme.typography.body, backgroundColor: Theme.colors.surface, borderWidth: 1, borderColor: Theme.colors.strokeStrong, borderRadius: Theme.radii.md },
   notes: { minHeight: 130, paddingTop: Theme.spacing.md },
+  tagHelp: { marginBottom: Theme.spacing.md, color: Theme.colors.textSecondary, fontFamily: Theme.typography.families.interface, ...Theme.typography.secondary },
+  tags: { flexDirection: 'row', flexWrap: 'wrap', gap: Theme.spacing.sm },
+  tagChip: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: Theme.spacing.xs, paddingHorizontal: Theme.spacing.md, borderWidth: 1, borderColor: Theme.colors.stroke, borderRadius: Theme.radii.pill, backgroundColor: Theme.colors.surface },
+  tagChipActive: { borderColor: Theme.colors.accentStroke, backgroundColor: Theme.colors.accentGlow },
+  tagText: { color: Theme.colors.textSecondary, fontFamily: Theme.typography.families.interfaceMedium, ...Theme.typography.secondary },
+  tagTextActive: { color: Theme.colors.textPrimary },
+  newTagRow: { flexDirection: 'row', gap: Theme.spacing.sm, marginTop: Theme.spacing.lg },
+  newTagInput: { flex: 1 },
+  addTagButton: { width: 48, height: 48, alignItems: 'center', justifyContent: 'center', backgroundColor: Theme.colors.accentInteractive, borderRadius: Theme.radii.md },
+  addTagButtonPressed: { backgroundColor: Theme.colors.accentPressed },
   states: { flexDirection: 'row', flexWrap: 'wrap', gap: Theme.spacing.sm, marginBottom: Theme.spacing.xs },
   stateButton: { minHeight: 44, justifyContent: 'center', paddingHorizontal: Theme.spacing.md, borderWidth: 1, borderColor: Theme.colors.stroke, borderRadius: Theme.radii.pill, backgroundColor: Theme.colors.surface },
   stateButtonActive: { borderColor: Theme.colors.accentStroke, backgroundColor: Theme.colors.surfacePressed },

@@ -127,6 +127,10 @@ describe('integridad de database.js', () => {
     const clasico = await database.crearEtiqueta('Clásicos');
     await database.asignarEtiquetaALibro(cien.uuid, clasico.uuid);
 
+    await expect(database.obtenerEtiquetasDeLibro(cien.uuid)).resolves.toEqual([
+      expect.objectContaining({ uuid: clasico.uuid, nombre: 'Clásicos' }),
+    ]);
+
     await expect(database.buscarLibros({ texto: 'soled' })).resolves.toEqual([
       expect.objectContaining({ titulo: 'Cien años de soledad' }),
     ]);
