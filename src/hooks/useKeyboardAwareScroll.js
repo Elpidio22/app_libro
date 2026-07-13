@@ -2,23 +2,22 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { findNodeHandle, Keyboard, Platform, UIManager } from 'react-native';
 
 const SAFE_GAP = 24;
+const SAFE_INPUT_TOP = 140;
 
 export function useKeyboardAwareScroll() {
   const scrollRef = useRef(null);
   const scrollOffsetRef = useRef(0);
   const focusedTargetRef = useRef(null);
-  const keyboardTopRef = useRef(Number.POSITIVE_INFINITY);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
 
   const revealFocusedInput = useCallback((extraGap = SAFE_GAP) => {
     if (Platform.OS !== 'android' || !focusedTargetRef.current) return;
     const target = focusedTargetRef.current;
-    const onMeasure = (_x, y, _width, height) => {
-      const visibleBottom = keyboardTopRef.current - extraGap;
-      const inputBottom = y + height;
-      if (inputBottom <= visibleBottom) return;
+    const onMeasure = (_x, y) => {
+      const desiredTop = SAFE_INPUT_TOP + Math.max(0, extraGap - SAFE_GAP);
+      if (y <= desiredTop) return;
       scrollRef.current?.scrollTo({
-        y: Math.max(0, scrollOffsetRef.current + inputBottom - visibleBottom),
+        y: Math.max(0, scrollOffsetRef.current + y - desiredTop),
         animated: false,
       });
     };
@@ -33,13 +32,11 @@ export function useKeyboardAwareScroll() {
   useEffect(() => {
     if (Platform.OS !== 'android') return undefined;
     const showSubscription = Keyboard.addListener('keyboardDidShow', (event) => {
-      keyboardTopRef.current = event.endCoordinates.screenY;
       setKeyboardHeight(event.endCoordinates.height);
       setTimeout(() => revealFocusedInput(), 180);
       setTimeout(() => revealFocusedInput(), 420);
     });
     const hideSubscription = Keyboard.addListener('keyboardDidHide', () => {
-      keyboardTopRef.current = Number.POSITIVE_INFINITY;
       setKeyboardHeight(0);
     });
     return () => {
