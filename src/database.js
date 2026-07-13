@@ -533,6 +533,14 @@ export async function terminarSesionLectura(libroUuid, paginaActual) {
   const db = await getDatabase();
   let resultado = null;
   await db.withExclusiveTransactionAsync(async (transaction) => {
+    const libro = await transaction.getFirstAsync(
+      'SELECT id, uuid, paginas_totales, pagina_actual FROM mis_libros WHERE uuid = ?',
+      String(libroUuid)
+    );
+    if (!libro) throw new Error('El libro no existe.');
+    if (libro.paginas_totales !== null && pagina > Number(libro.paginas_totales)) {
+      throw new Error('La página actual no puede superar las páginas totales.');
+    }
     const sesion = await transaction.getFirstAsync(
       `SELECT * FROM sesiones_lectura
        WHERE libro_uuid = ? AND hora_fin IS NULL
@@ -554,6 +562,12 @@ export async function terminarSesionLectura(libroUuid, paginaActual) {
       paginasLeidas,
       sesion.id
     );
+    const progreso = await transaction.runAsync(
+      'UPDATE mis_libros SET pagina_actual = ? WHERE uuid = ?',
+      pagina,
+      String(libroUuid)
+    );
+    if (!progreso.changes) throw new Error('No se pudo actualizar el progreso del libro.');
     resultado = {
       ...sesion,
       hora_fin: horaFin,

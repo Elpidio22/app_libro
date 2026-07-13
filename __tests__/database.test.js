@@ -72,6 +72,7 @@ describe('integridad de database.js', () => {
       const finished = await database.terminarSesionLectura(book.uuid, 65);
       expect(finished).toMatchObject({ paginas_leidas: 25, minutos: 45 });
       await expect(database.obtenerSesionActiva(book.uuid)).resolves.toBeNull();
+      await expect(database.obtenerLibroPorId(bookId)).resolves.toMatchObject({ pagina_actual: 65 });
 
       const chronicles = await database.obtenerCronicas();
       expect(chronicles.metricas).toMatchObject({
@@ -82,6 +83,29 @@ describe('integridad de database.js', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  test('revierte el cierre de sesión si falla la actualización de progreso', async () => {
+    const { database, sqlite } = loadSubject();
+    await database.inicializarBaseDeDatos();
+    const bookId = await database.insertarLibro({
+      titulo: 'Sesión atómica',
+      paginas_totales: 120,
+      pagina_actual: 10,
+      estado: 'leyendo',
+    });
+    const book = await database.obtenerLibroPorId(bookId);
+    const active = await database.iniciarSesionLectura(book.uuid, 10);
+    sqlite.__failNextBookUpdate(new Error('fallo forzado al actualizar progreso'));
+
+    await expect(database.terminarSesionLectura(book.uuid, 25)).rejects.toThrow('fallo forzado');
+
+    await expect(database.obtenerSesionActiva(book.uuid)).resolves.toMatchObject({
+      id: active.id,
+      hora_fin: null,
+      paginas_leidas: 10,
+    });
+    await expect(database.obtenerLibroPorId(bookId)).resolves.toMatchObject({ pagina_actual: 10 });
   });
 
   test('busca por prefijo con FTS5 y combina el filtro de etiquetas', async () => {

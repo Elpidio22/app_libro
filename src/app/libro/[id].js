@@ -17,7 +17,6 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import {
   actualizarLibro,
-  actualizarProgreso,
   eliminarLibro,
   iniciarSesionLectura,
   obtenerLibroPorId,
@@ -229,7 +228,6 @@ export default function LibroDetalleScreen() {
         Alert.alert('Sesión iniciada', 'El tiempo de lectura comenzó a registrarse en este dispositivo.');
       } else {
         const sesionTerminada = await terminarSesionLectura(libro.uuid, paginaActual);
-        await actualizarProgreso(libro.id, paginaActual, libro.estado);
         if (!isMountedRef.current) return;
         setSesionActiva(null);
         setLibro((actual) => ({ ...actual, pagina_actual: String(paginaActual) }));
