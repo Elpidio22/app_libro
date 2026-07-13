@@ -22,6 +22,11 @@ const icons = {
   ajustes: ['settings', 'settings-outline'],
 };
 
+function describirErrorDeArranque(reason) {
+  const detalle = reason instanceof Error ? reason.message : String(reason || 'Error desconocido');
+  return `SQLite no pudo inicializar la biblioteca: ${detalle}`;
+}
+
 export default function RootLayout() {
   const insets = useSafeAreaInsets();
   const [ready, setReady] = useState(false);
@@ -33,10 +38,22 @@ export default function RootLayout() {
   });
 
   useEffect(() => {
-    inicializarBaseDeDatos().then(() => setReady(true)).catch((reason) => {
-      console.error(reason);
-      setError('No se pudo abrir la biblioteca local.');
-    });
+    let isMounted = true;
+
+    async function prepararBaseDeDatos() {
+      try {
+        await inicializarBaseDeDatos();
+        if (isMounted) setReady(true);
+      } catch (reason) {
+        console.error('Falló la inicialización de SQLite.', reason);
+        if (isMounted) setError(describirErrorDeArranque(reason));
+      }
+    }
+
+    prepararBaseDeDatos();
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   const fontsSettled = fontsLoaded || Boolean(fontError);
