@@ -37,11 +37,12 @@ import {
 } from '../../portadas';
 import { Theme } from '../../constants/theme';
 import { PremiumButton, PremiumCard } from '../../components/PremiumUI';
+import { useKeyboardAwareScroll } from '../../hooks/useKeyboardAwareScroll';
 
 const ESTADOS = ['quiero leer', 'leyendo', 'terminado', 'abandonado'];
 
 export default function LibroDetalleScreen() {
-  const scrollRef = useRef(null);
+  const { scrollRef, keyboardHeight, onInputFocus, onScroll } = useKeyboardAwareScroll();
   const isMountedRef = useRef(false);
   const portadaTemporalRef = useRef(null);
   const isProcessingTagsRef = useRef(false);
@@ -111,14 +112,7 @@ export default function LibroDetalleScreen() {
   }
 
   function mantenerInputVisible(event, extraOffset = 110) {
-    const target = event.target || event.nativeEvent.target;
-    setTimeout(() => {
-      scrollRef.current?.scrollResponderScrollNativeHandleToKeyboard(
-        target,
-        extraOffset,
-        true
-      );
-    }, Platform.OS === 'android' ? 280 : 80);
+    onInputFocus(event, Math.max(24, extraOffset - 86));
   }
 
   async function seleccionarPortada() {
@@ -349,7 +343,9 @@ export default function LibroDetalleScreen() {
       <ScrollView
         ref={scrollRef}
         style={styles.scroll}
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[styles.content, Platform.OS === 'android' && { paddingBottom: 112 + keyboardHeight }]}
+        onScroll={onScroll}
+        scrollEventThrottle={16}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
         automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}

@@ -28,6 +28,7 @@ import {
 } from '../portadas';
 import { Theme } from '../constants/theme';
 import { PremiumButton } from '../components/PremiumUI';
+import { useKeyboardAwareScroll } from '../hooks/useKeyboardAwareScroll';
 
 const GOOGLE_URL = 'https://www.googleapis.com/books/v1/volumes';
 const MELI_URL = 'https://api.mercadolibre.com/sites/MLA/search';
@@ -117,7 +118,7 @@ export async function buscarLibroEnCascada(isbn, { signal } = {}) {
 
 export default function AltaLibroScreen() {
   const scanLock = useRef(false);
-  const formScrollRef = useRef(null);
+  const { scrollRef: formScrollRef, keyboardHeight, onInputFocus, onScroll } = useKeyboardAwareScroll();
   const isMountedRef = useRef(false);
   const searchControllerRef = useRef(null);
   const portadaTemporalRef = useRef(null);
@@ -177,14 +178,7 @@ export default function AltaLibroScreen() {
   }
 
   function mantenerInputVisible(event, extraOffset = 110) {
-    const target = event.target || event.nativeEvent.target;
-    setTimeout(() => {
-      formScrollRef.current?.scrollResponderScrollNativeHandleToKeyboard(
-        target,
-        extraOffset,
-        true
-      );
-    }, Platform.OS === 'android' ? 280 : 80);
+    onInputFocus(event, Math.max(24, extraOffset - 86));
   }
 
   function enfocarCampo(campo, event) {
@@ -410,7 +404,9 @@ export default function AltaLibroScreen() {
       <ScrollView
         ref={formScrollRef}
         style={styles.formScroll}
-        contentContainerStyle={styles.formContent}
+        contentContainerStyle={[styles.formContent, Platform.OS === 'android' && { paddingBottom: Theme.spacing.xxxl + keyboardHeight }]}
+        onScroll={onScroll}
+        scrollEventThrottle={16}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
         automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}

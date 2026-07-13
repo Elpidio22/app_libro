@@ -20,6 +20,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { addDeseo, deleteDeseo, getDeseos, marcarComoAdquirido } from '../database';
 import { Theme } from '../constants/theme';
 import { PremiumButton, PremiumCard } from '../components/PremiumUI';
+import { useKeyboardAwareScroll } from '../hooks/useKeyboardAwareScroll';
 
 const PRIORIDADES = ['alta', 'media', 'baja'];
 const PRIORIDAD_COLOR = {
@@ -76,6 +77,7 @@ function DeseoRow({ deseo, ocupado, onAdquirir, onEliminar }) {
 }
 
 export default function DeseosScreen() {
+  const { scrollRef: modalScrollRef, keyboardHeight, onInputFocus, onScroll } = useKeyboardAwareScroll();
   const router = useRouter();
   const isMountedRef = useRef(false);
   const isProcessing = useRef(false);
@@ -289,7 +291,10 @@ export default function DeseosScreen() {
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         >
           <ScrollView
-            contentContainerStyle={styles.modalScroll}
+            ref={modalScrollRef}
+            contentContainerStyle={[styles.modalScroll, Platform.OS === 'android' && { paddingBottom: Theme.spacing.xxxl + keyboardHeight }]}
+            onScroll={onScroll}
+            scrollEventThrottle={16}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
             automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
@@ -303,11 +308,11 @@ export default function DeseosScreen() {
               </View>
 
               <Text style={styles.label}>TÍTULO *</Text>
-              <TextInput value={formulario.titulo} onChangeText={(value) => cambiarCampo('titulo', value)} style={styles.input} placeholder="Título del libro" placeholderTextColor={Theme.colors.textTertiary} autoFocus />
+              <TextInput value={formulario.titulo} onFocus={onInputFocus} onChangeText={(value) => cambiarCampo('titulo', value)} style={styles.input} placeholder="Título del libro" placeholderTextColor={Theme.colors.textTertiary} autoFocus />
               <Text style={styles.label}>AUTOR</Text>
-              <TextInput value={formulario.autor} onChangeText={(value) => cambiarCampo('autor', value)} style={styles.input} placeholder="Autor" placeholderTextColor={Theme.colors.textTertiary} />
+              <TextInput value={formulario.autor} onFocus={onInputFocus} onChangeText={(value) => cambiarCampo('autor', value)} style={styles.input} placeholder="Autor" placeholderTextColor={Theme.colors.textTertiary} />
               <Text style={styles.label}>PRECIO ESTIMADO</Text>
-              <TextInput value={formulario.precio} onChangeText={(value) => cambiarCampo('precio', value.replace(/[^0-9.,]/g, ''))} style={styles.input} placeholder="$ 0" placeholderTextColor={Theme.colors.textTertiary} keyboardType="decimal-pad" />
+              <TextInput value={formulario.precio} onFocus={onInputFocus} onChangeText={(value) => cambiarCampo('precio', value.replace(/[^0-9.,]/g, ''))} style={styles.input} placeholder="$ 0" placeholderTextColor={Theme.colors.textTertiary} keyboardType="decimal-pad" />
               <Text style={styles.label}>PRIORIDAD</Text>
               <View style={styles.prioritySelector}>
                 {PRIORIDADES.map((prioridad) => {
