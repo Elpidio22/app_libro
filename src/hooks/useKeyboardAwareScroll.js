@@ -18,7 +18,7 @@ export function useKeyboardAwareScroll() {
       if (inputBottom <= visibleBottom) return;
       scrollRef.current?.scrollTo({
         y: Math.max(0, scrollOffsetRef.current + inputBottom - visibleBottom),
-        animated: true,
+        animated: false,
       });
     });
   }, []);
@@ -28,7 +28,8 @@ export function useKeyboardAwareScroll() {
     const showSubscription = Keyboard.addListener('keyboardDidShow', (event) => {
       keyboardTopRef.current = event.endCoordinates.screenY;
       setKeyboardHeight(event.endCoordinates.height);
-      setTimeout(() => revealFocusedInput(), 80);
+      setTimeout(() => revealFocusedInput(), 180);
+      setTimeout(() => revealFocusedInput(), 420);
     });
     const hideSubscription = Keyboard.addListener('keyboardDidHide', () => {
       keyboardTopRef.current = Number.POSITIVE_INFINITY;
@@ -42,7 +43,8 @@ export function useKeyboardAwareScroll() {
 
   const onInputFocus = useCallback((event, extraGap = SAFE_GAP) => {
     focusedTargetRef.current = event.target || event.nativeEvent.target;
-    setTimeout(() => revealFocusedInput(extraGap), 350);
+    setTimeout(() => revealFocusedInput(extraGap), 500);
+    setTimeout(() => revealFocusedInput(extraGap), 800);
   }, [revealFocusedInput]);
 
   const onScroll = useCallback((event) => {
