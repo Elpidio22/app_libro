@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Keyboard, Platform, UIManager } from 'react-native';
+import { findNodeHandle, Keyboard, Platform, UIManager } from 'react-native';
 
 const SAFE_GAP = 24;
 
@@ -12,7 +12,8 @@ export function useKeyboardAwareScroll() {
 
   const revealFocusedInput = useCallback((extraGap = SAFE_GAP) => {
     if (Platform.OS !== 'android' || !focusedTargetRef.current) return;
-    UIManager.measureInWindow(focusedTargetRef.current, (_x, y, _width, height) => {
+    const target = focusedTargetRef.current;
+    const onMeasure = (_x, y, _width, height) => {
       const visibleBottom = keyboardTopRef.current - extraGap;
       const inputBottom = y + height;
       if (inputBottom <= visibleBottom) return;
@@ -20,7 +21,13 @@ export function useKeyboardAwareScroll() {
         y: Math.max(0, scrollOffsetRef.current + inputBottom - visibleBottom),
         animated: false,
       });
-    });
+    };
+    if (typeof target.measureInWindow === 'function') {
+      target.measureInWindow(onMeasure);
+      return;
+    }
+    const nativeHandle = typeof target === 'number' ? target : findNodeHandle(target);
+    if (typeof nativeHandle === 'number') UIManager.measureInWindow(nativeHandle, onMeasure);
   }, []);
 
   useEffect(() => {
