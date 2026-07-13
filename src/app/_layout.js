@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Component, useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { Tabs } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -27,7 +27,35 @@ function describirErrorDeArranque(reason) {
   return `SQLite no pudo inicializar la biblioteca: ${detalle}`;
 }
 
-export default function RootLayout() {
+class AppErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidCatch(error, info) {
+    console.error('Error fatal capturado en la interfaz.', error, info);
+    SplashScreen.hideAsync().catch(() => {});
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <View style={styles.center}>
+        <StatusBar style="light" />
+        <Ionicons name="warning-outline" size={46} color={Theme.colors.danger} />
+        <Text style={styles.title}>La aplicación no pudo iniciar</Text>
+        <Text style={styles.muted}>{String(this.state.error.message || this.state.error)}</Text>
+      </View>
+    );
+  }
+}
+
+function RootLayoutContent() {
   const insets = useSafeAreaInsets();
   const [ready, setReady] = useState(false);
   const [error, setError] = useState('');
@@ -119,6 +147,14 @@ export default function RootLayout() {
         <Tabs.Screen name="libro/[id]" options={{ href: null, title: 'Ficha del libro' }} />
       </Tabs>
     </>
+  );
+}
+
+export default function RootLayout() {
+  return (
+    <AppErrorBoundary>
+      <RootLayoutContent />
+    </AppErrorBoundary>
   );
 }
 

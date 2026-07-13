@@ -3,6 +3,7 @@
     "name": "Mi Biblioteca",
     "slug": "mi-biblioteca",
     "version": "1.0.0",
+    "newArchEnabled": false,
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "applibro",
@@ -18,7 +19,11 @@
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.CAMERA"
+      ],
+      "package": "com.elpidioluna.mibiblioteca"
     },
     "web": {
       "output": "static",
@@ -59,7 +64,13 @@
     ],
     "experiments": {
       "typedRoutes": true,
-      "reactCompiler": true
+      "reactCompiler": false
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "99f7cd99-2f39-4bf7-9ca0-2c880d0dbbdf"
+      }
     }
   }
 }
