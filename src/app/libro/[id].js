@@ -345,14 +345,14 @@ export default function LibroDetalleScreen() {
   }
 
   return (
-    <KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+    <KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <ScrollView
         ref={scrollRef}
         style={styles.scroll}
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
-        automaticallyAdjustKeyboardInsets
+        automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
       >
         {libro.portada_url ? (
           <Image source={{ uri: libro.portada_url }} style={styles.cover} />
@@ -395,6 +395,7 @@ export default function LibroDetalleScreen() {
               <TextInput
                 value={paginaSesion}
                 onChangeText={(value) => setPaginaSesion(value.replace(/\D/g, ''))}
+                onFocus={mantenerInputVisible}
                 style={styles.sessionPageInput}
                 keyboardType="number-pad"
                 accessibilityLabel="Página alcanzada en la sesión"

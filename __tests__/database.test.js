@@ -88,6 +88,7 @@ describe('integridad de database.js', () => {
 
       const chronicles = await database.obtenerCronicas();
       expect(chronicles.metricas).toMatchObject({
+        paginas_acumuladas: 65,
         paginas_mes: 25,
         minutos_mes: 45,
         racha_dias: 1,

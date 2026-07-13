@@ -119,8 +119,11 @@ export default function CronicasScreen() {
             <View style={styles.featuredIcon}>
               <Ionicons name="document-text-outline" size={24} color={Theme.colors.accentBright} />
             </View>
-            <Text style={styles.featuredValue}>{metricas.paginas_mes}</Text>
-            <Text style={styles.featuredLabel}>Páginas leídas este mes</Text>
+            <Text style={styles.featuredValue}>{metricas.paginas_acumuladas}</Text>
+            <Text style={styles.featuredLabel}>Páginas registradas en tu biblioteca</Text>
+            <Text style={styles.featuredDetail}>
+              {metricas.paginas_mes} {metricas.paginas_mes === 1 ? 'página' : 'páginas'} mediante sesiones este mes
+            </Text>
             <View style={styles.featuredRule} />
           </PremiumCard>
 
@@ -171,6 +174,7 @@ const styles = StyleSheet.create({
   featuredIcon: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center', marginBottom: Theme.spacing.md, backgroundColor: Theme.colors.accentGlow, borderRadius: Theme.radii.pill },
   featuredValue: { color: Theme.colors.textPrimary, fontFamily: Theme.typography.families.editorialBold, ...Theme.typography.display, fontSize: 42, lineHeight: 48 },
   featuredLabel: { marginTop: Theme.spacing.xs, color: Theme.colors.textSecondary, fontFamily: Theme.typography.families.interfaceMedium, ...Theme.typography.body },
+  featuredDetail: { marginTop: Theme.spacing.sm, color: Theme.colors.textTertiary, fontFamily: Theme.typography.families.interface, ...Theme.typography.secondary, textAlign: 'center' },
   featuredRule: { width: 40, height: 2, marginTop: Theme.spacing.lg, backgroundColor: Theme.colors.accent, borderRadius: Theme.radii.pill },
   smallMetricsRow: { flexDirection: 'row', gap: Theme.spacing.md, marginTop: Theme.spacing.md },
   smallMetric: { flex: 1, minHeight: 124, padding: Theme.spacing.lg },

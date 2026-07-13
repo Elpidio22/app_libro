@@ -286,12 +286,13 @@ export default function DeseosScreen() {
       <Modal visible={modalVisible} transparent animationType="fade" onRequestClose={cerrarFormulario}>
         <KeyboardAvoidingView
           style={styles.modalBackdrop}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         >
           <ScrollView
             contentContainerStyle={styles.modalScroll}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+            automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
           >
             <PremiumCard style={styles.modalCard}>
               <View style={styles.modalHeader}>
