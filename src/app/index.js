@@ -90,6 +90,8 @@ export default function Biblioteca() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
+  const filtrosRef = useRef({ query, etiquetaActiva });
+  filtrosRef.current = { query, etiquetaActiva };
 
   const loadBooks = useCallback(async (refresh = false) => {
     if (refresh) setRefreshing(true);
@@ -115,18 +117,25 @@ export default function Biblioteca() {
     isMountedRef.current = true;
     const cargar = async () => {
       setLoading(true);
+      const requestId = ++searchRequestRef.current;
+      const filtrosActuales = filtrosRef.current;
       try {
         const [resultado, etiquetasDisponibles] = await Promise.all([
-          buscarLibros(),
+          buscarLibros({
+            texto: filtrosActuales.query,
+            etiquetaUuid: filtrosActuales.etiquetaActiva,
+          }),
           obtenerEtiquetas(),
         ]);
-        if (!isMounted) return;
+        if (!isMounted || requestId !== searchRequestRef.current) return;
         setBooks(resultado);
         setEtiquetas(etiquetasDisponibles);
         setError('');
       } catch (reason) {
         console.error(reason);
-        if (isMounted) setError('No fue posible leer los libros guardados.');
+        if (isMounted && requestId === searchRequestRef.current) {
+          setError('No fue posible leer los libros guardados.');
+        }
       } finally {
         if (isMounted) setLoading(false);
       }
