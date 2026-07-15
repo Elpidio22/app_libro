@@ -266,7 +266,7 @@ async function obtenerDashboardAnaliticoInterno(options = {}, retryCount = 0) {
   const rango = validarRango(options);
   const revisionsAtStart = getDatabaseRevisions();
   const cacheKey = `${rango.desde}|${rango.hasta}`;
-  if (cache?.key === cacheKey && mismasRevisiones(cache.revisions, revisionsAtStart)) return cache.value;
+  if (!options.force && cache?.key === cacheKey && mismasRevisiones(cache.revisions, revisionsAtStart)) return cache.value;
 
   const generation = ++requestGeneration;
   const db = await getDatabase();

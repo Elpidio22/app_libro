@@ -142,7 +142,7 @@ function RootLayoutContent() {
         <Tabs.Screen name="index" options={{ title: 'Biblioteca', headerTitle: 'Mi Biblioteca' }} />
         <Tabs.Screen name="scanner" options={{ title: 'Añadir', headerTitle: 'Añadir un libro' }} />
         <Tabs.Screen name="deseos" options={{ title: 'Deseos', headerTitle: 'La cacería' }} />
-        <Tabs.Screen name="cronicas" options={{ title: 'Crónicas', headerTitle: 'Crónicas' }} />
+        <Tabs.Screen name="cronicas" options={{ title: 'Crónicas', headerShown: false }} />
         <Tabs.Screen name="ajustes" options={{ title: 'Ajustes', headerTitle: 'Ajustes' }} />
         <Tabs.Screen name="libro/[id]" options={{ href: null, title: 'Ficha del libro' }} />
       </Tabs>
