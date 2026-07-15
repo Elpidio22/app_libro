@@ -17,8 +17,12 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
-import axios from 'axios';
 import { insertarLibro, obtenerLibroPorISBN } from '../database';
+import {
+  buscarLibroPorISBN,
+  normalizarISBN,
+  obtenerVariantesISBN,
+} from '../services/isbnService';
 import {
   descartarPortadaTemporal,
   obtenerFeedbackPortada,
@@ -30,9 +34,6 @@ import { Theme } from '../constants/theme';
 import { PremiumButton } from '../components/PremiumUI';
 import { useKeyboardAwareScroll } from '../hooks/useKeyboardAwareScroll';
 
-const GOOGLE_URL = 'https://www.googleapis.com/books/v1/volumes';
-const MELI_URL = 'https://api.mercadolibre.com/sites/MLA/search';
-const OPEN_LIBRARY_URL = 'https://openlibrary.org/api/books';
 const FORMULARIO_VACIO = {
   isbn: '',
   titulo: '',
@@ -41,79 +42,34 @@ const FORMULARIO_VACIO = {
   portada_url: null,
 };
 
-function normalizarISBN(value) {
-  const isbn = String(value || '').replace(/[^0-9Xx]/g, '').toUpperCase();
-  return isbn.length === 10 || isbn.length === 13 ? isbn : null;
-}
-
-async function buscarGoogle(isbn, signal) {
-  const response = await axios.get(GOOGLE_URL, {
-    params: { q: `isbn:${isbn}`, maxResults: 1 },
-    timeout: 10000,
-    signal,
-  });
-  const info = response.data?.items?.[0]?.volumeInfo;
-  if (!info?.title) return null;
+function camposPersistibles(resultado) {
   return {
-    isbn,
-    titulo: info.title,
-    autor: info.authors?.join(', ') || '',
-    paginas_totales: info.pageCount ? String(info.pageCount) : '',
-    portada_url: info.imageLinks?.thumbnail?.replace(/^http:/i, 'https:') || null,
-    fuente: 'Google Books',
+    isbn: resultado.isbn,
+    titulo: resultado.data?.titulo || '',
+    autor: resultado.data?.autor || '',
+    paginas_totales: resultado.data?.paginas_totales || '',
+    portada_url: resultado.data?.portada_url || null,
   };
 }
 
-async function buscarMercadoLibre(isbn, signal) {
-  const response = await axios.get(MELI_URL, {
-    params: { q: isbn, limit: 1 },
-    timeout: 10000,
-    signal,
-  });
-  const item = response.data?.results?.[0];
-  if (!item?.title) return null;
-  return {
-    isbn,
-    titulo: item.title,
-    autor: '',
-    paginas_totales: '',
-    portada_url: (item.secure_thumbnail || item.thumbnail || '').replace(/^http:/i, 'https:') || null,
-    fuente: 'Mercado Libre',
-  };
-}
-
-async function buscarOpenLibrary(isbn, signal) {
-  const key = `ISBN:${isbn}`;
-  const response = await axios.get(OPEN_LIBRARY_URL, {
-    params: { bibkeys: key, format: 'json', jscmd: 'data' },
-    timeout: 10000,
-    signal,
-  });
-  const info = response.data?.[key];
-  if (!info?.title) return null;
-  return {
-    isbn,
-    titulo: info.title,
-    autor: info.authors?.map((author) => author.name).join(', ') || '',
-    paginas_totales: info.number_of_pages ? String(info.number_of_pages) : '',
-    portada_url: info.cover?.large || info.cover?.medium || info.cover?.small || null,
-    fuente: 'Open Library',
-  };
-}
-
-export async function buscarLibroEnCascada(isbn, { signal } = {}) {
-  const proveedores = [buscarGoogle, buscarOpenLibrary, buscarMercadoLibre];
-  for (const buscar of proveedores) {
-    if (signal?.aborted) throw new Error('Búsqueda cancelada');
-    try {
-      const resultado = await buscar(isbn, signal);
-      if (resultado?.titulo) return resultado;
-    } catch (error) {
-      if (signal?.aborted || error?.code === 'ERR_CANCELED') throw error;
-      console.warn(`Falló el proveedor ${buscar.name}.`, error?.message || error);
-    }
+function mensajeParaResultado(resultado) {
+  if (resultado.status === 'not_found') {
+    return {
+      titulo: 'Edición no encontrada',
+      mensaje: 'El ISBN es válido, pero esta edición no aparece en los catálogos consultados.',
+    };
   }
-  return null;
+  if (resultado.status === 'rate_limited') {
+    return {
+      titulo: 'Catálogos temporalmente limitados',
+      mensaje: 'Los catálogos recibieron demasiadas consultas. Espera un momento y vuelve a intentarlo.',
+    };
+  }
+  if (resultado.status === 'canceled') return null;
+  return {
+    titulo: 'No se pudieron consultar los catálogos',
+    mensaje: 'No pudimos consultar los catálogos. Revisa la conexión y vuelve a intentarlo.',
+  };
 }
 
 export default function AltaLibroScreen() {
@@ -130,6 +86,8 @@ export default function AltaLibroScreen() {
   const [searchingManual, setSearchingManual] = useState(false);
   const [saving, setSaving] = useState(false);
   const [confirmando, setConfirmando] = useState(false);
+  const [torchEnabled, setTorchEnabled] = useState(false);
+  const [codigoDetectado, setCodigoDetectado] = useState(null);
   const [focusedField, setFocusedField] = useState(null);
   const [mensaje, setMensaje] = useState('Alinea el código ISBN dentro del marco');
   const [formulario, setFormulario] = useState(FORMULARIO_VACIO);
@@ -148,12 +106,16 @@ export default function AltaLibroScreen() {
   }, []));
 
   function limpiarEscaner() {
+    searchControllerRef.current?.abort();
+    searchControllerRef.current = null;
     descartarPortadaTemporal(portadaTemporalRef.current);
     portadaTemporalRef.current = null;
     scanLock.current = false;
     setPaused(false);
     setLoading(false);
     setConfirmando(false);
+    setTorchEnabled(false);
+    setCodigoDetectado(null);
     setFormulario(FORMULARIO_VACIO);
     setMensaje('Alinea el código ISBN dentro del marco');
   }
@@ -165,6 +127,8 @@ export default function AltaLibroScreen() {
   }
 
   function abrirModoManual(isbn = '') {
+    searchControllerRef.current?.abort();
+    searchControllerRef.current = null;
     setModo('manual');
     scanLock.current = false;
     setPaused(false);
@@ -186,15 +150,17 @@ export default function AltaLibroScreen() {
     mantenerInputVisible(event);
   }
 
-  const detectarISBN = useCallback(async ({ data }) => {
+  const detectarISBN = useCallback(async ({ type, data }) => {
     if (scanLock.current) return;
     const isbn = normalizarISBN(data);
-    if (!isbn) {
-      setMensaje('El código detectado no es un ISBN válido');
+    if (!isbn || obtenerVariantesISBN(isbn).length === 0) {
+      setCodigoDetectado({ type, data, isbn: null });
+      setMensaje('El código detectado no es un ISBN válido. Sigue apuntando a otro código.');
       return;
     }
 
     scanLock.current = true;
+    setCodigoDetectado({ type, data, isbn });
     searchControllerRef.current?.abort();
     const controller = new AbortController();
     searchControllerRef.current = controller;
@@ -210,12 +176,14 @@ export default function AltaLibroScreen() {
         return;
       }
 
-      const encontrado = await buscarLibroEnCascada(isbn, { signal: controller.signal });
+      const resultado = await buscarLibroPorISBN(isbn, { signal: controller.signal });
       if (!isMountedRef.current || controller.signal.aborted) return;
-      if (!encontrado) {
+      if (resultado.status !== 'found') {
+        const feedback = mensajeParaResultado(resultado);
+        if (!feedback) return;
         Alert.alert(
-          'Edición no encontrada',
-          'No encontramos datos automáticos. Puedes completar el libro manualmente.',
+          feedback.titulo,
+          feedback.mensaje,
           [
             { text: 'Volver a escanear', style: 'cancel', onPress: limpiarEscaner },
             { text: 'Completar manualmente', onPress: () => abrirModoManual(isbn) },
@@ -224,9 +192,10 @@ export default function AltaLibroScreen() {
         return;
       }
 
+      const encontrado = camposPersistibles(resultado);
       setFormulario(encontrado);
       setConfirmando(true);
-      setMensaje(`Datos encontrados en ${encontrado.fuente}`);
+      setMensaje(`ISBN ${isbn} · ${resultado.fuentes.join(' + ')}`);
     } catch (error) {
       if (!isMountedRef.current || controller.signal.aborted) return;
       console.error(error);
@@ -289,9 +258,10 @@ export default function AltaLibroScreen() {
   }
 
   async function buscarISBNManual() {
+    if (searchControllerRef.current) return;
     const isbn = normalizarISBN(formulario.isbn);
-    if (!isbn) {
-      Alert.alert('ISBN inválido', 'Ingresa un ISBN de 10 o 13 caracteres. Puedes escribirlo con guiones.');
+    if (!isbn || obtenerVariantesISBN(isbn).length === 0) {
+      Alert.alert('ISBN inválido', 'El código detectado no es un ISBN válido. Revisa sus dígitos y el checksum.');
       return;
     }
 
@@ -305,22 +275,28 @@ export default function AltaLibroScreen() {
         Alert.alert('Libro duplicado', 'Este ISBN ya existe en tu biblioteca.');
         return;
       }
-      const encontrado = await buscarLibroEnCascada(isbn, { signal: controller.signal });
+      const resultado = await buscarLibroPorISBN(isbn, { signal: controller.signal });
       if (!isMountedRef.current || controller.signal.aborted) return;
-      if (!encontrado) {
+      if (resultado.status !== 'found') {
+        const feedback = mensajeParaResultado(resultado);
+        if (!feedback) return;
         Alert.alert(
-          'Sin resultados',
-          'No encontramos esta edición. Puedes conservar el ISBN y completar el resto del formulario manualmente.'
+          feedback.titulo,
+          `${feedback.mensaje} Los datos que escribiste se conservaron.`
         );
         actualizarCampo('isbn', isbn);
         return;
       }
+      const encontrado = camposPersistibles(resultado);
       setFormulario((actual) => ({
         ...actual,
-        ...encontrado,
         isbn,
+        titulo: actual.titulo || encontrado.titulo,
+        autor: actual.autor || encontrado.autor,
+        paginas_totales: actual.paginas_totales || encontrado.paginas_totales,
+        portada_url: actual.portada_url || encontrado.portada_url,
       }));
-      Alert.alert('Datos encontrados', `El formulario fue completado desde ${encontrado.fuente}. Puedes corregir los campos antes de guardar.`);
+      Alert.alert('Datos encontrados', `Completamos los campos disponibles desde ${resultado.fuentes.join(' y ')}. Puedes corregirlos antes de guardar.`);
     } catch (error) {
       if (!isMountedRef.current || controller.signal.aborted) return;
       console.error(error);
@@ -337,8 +313,8 @@ export default function AltaLibroScreen() {
       return;
     }
     const isbn = formulario.isbn.trim() ? normalizarISBN(formulario.isbn) : null;
-    if (formulario.isbn.trim() && !isbn) {
-      Alert.alert('ISBN inválido', 'El ISBN debe tener 10 o 13 caracteres.');
+    if (formulario.isbn.trim() && (!isbn || obtenerVariantesISBN(isbn).length === 0)) {
+      Alert.alert('ISBN inválido', 'El ISBN no supera la validación matemática. Revisa sus dígitos.');
       return;
     }
     const paginas = formulario.paginas_totales === '' ? null : Number(formulario.paginas_totales);
@@ -487,15 +463,40 @@ export default function AltaLibroScreen() {
           <CameraView
             style={StyleSheet.absoluteFill}
             facing="back"
+            enableTorch={torchEnabled}
+            zoom={0.05}
             onBarcodeScanned={paused ? undefined : detectarISBN}
-            barcodeScannerSettings={{ barcodeTypes: ['ean13', 'ean8', 'upc_a', 'upc_e'] }}
+            barcodeScannerSettings={{ barcodeTypes: ['ean13'] }}
           />
         ) : null}
         <View style={styles.cameraOverlay}>
           {loading ? (
             <View style={styles.loadingBox}><ActivityIndicator size="large" color={Theme.colors.accent} /><Text style={styles.loadingText}>{mensaje}</Text></View>
           ) : (
-            <><View style={styles.scanFrame}><View style={styles.scanLine} /></View><View style={styles.messageBox}><Ionicons name="barcode-outline" size={23} color={Theme.colors.textPrimary} /><Text style={styles.help}>{mensaje}</Text></View></>
+            <>
+              <View style={styles.scanFrame}><View style={styles.scanLine} /></View>
+              <View style={styles.cameraActions}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={torchEnabled ? 'Apagar linterna' : 'Encender linterna'}
+                  style={({ pressed }) => [styles.torchButton, torchEnabled && styles.torchButtonActive, pressed && styles.segmentPressed]}
+                  onPress={() => setTorchEnabled((actual) => !actual)}
+                >
+                  <Ionicons name={torchEnabled ? 'flash' : 'flash-outline'} size={22} color={Theme.colors.textPrimary} />
+                </Pressable>
+              </View>
+              <View style={styles.messageBox}>
+                <Ionicons name="barcode-outline" size={23} color={Theme.colors.textPrimary} />
+                <View style={styles.messageCopy}>
+                  <Text style={styles.help}>{mensaje}</Text>
+                  {codigoDetectado?.data ? (
+                    <Text style={styles.detectedCode}>
+                      {codigoDetectado.isbn || codigoDetectado.data} · {codigoDetectado.type}
+                    </Text>
+                  ) : null}
+                </View>
+              </View>
+            </>
           )}
         </View>
       </View>
@@ -555,7 +556,12 @@ const styles = StyleSheet.create({
   cameraOverlay: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: Theme.spacing.xxl, backgroundColor: Theme.colors.transparent },
   scanFrame: { width: '100%', maxWidth: 330, height: 190, justifyContent: 'center', borderWidth: 2, borderColor: Theme.colors.accent, borderRadius: Theme.radii.md },
   scanLine: { height: 2, marginHorizontal: Theme.spacing.lg, backgroundColor: Theme.colors.accentBright },
+  cameraActions: { width: '100%', maxWidth: 330, flexDirection: 'row', justifyContent: 'flex-end', marginTop: Theme.spacing.md },
+  torchButton: { width: 48, height: 48, alignItems: 'center', justifyContent: 'center', backgroundColor: Theme.colors.overlay, borderWidth: 1, borderColor: Theme.colors.strokeStrong, borderRadius: Theme.radii.pill },
+  torchButtonActive: { backgroundColor: Theme.colors.accentPressed, borderColor: Theme.colors.accentStroke },
   messageBox: { flexDirection: 'row', alignItems: 'center', gap: Theme.spacing.sm, padding: Theme.spacing.lg, marginTop: Theme.spacing.xl, backgroundColor: Theme.colors.overlay, borderWidth: 1, borderColor: Theme.colors.strokeStrong, borderRadius: Theme.radii.sm },
+  messageCopy: { flexShrink: 1, gap: Theme.spacing.xs },
+  detectedCode: { color: Theme.colors.accentBright, fontFamily: Theme.typography.families.interfaceMedium, ...Theme.typography.label, textAlign: 'center' },
   loadingBox: { alignItems: 'center', gap: Theme.spacing.lg, padding: Theme.spacing.xxl, backgroundColor: Theme.colors.surface, borderWidth: 1, borderColor: Theme.colors.stroke, borderRadius: Theme.radii.md },
   loadingText: { color: Theme.colors.textPrimary, fontFamily: Theme.typography.families.interface, ...Theme.typography.body, textAlign: 'center' },
   help: { color: Theme.colors.textSecondary, fontFamily: Theme.typography.families.interface, ...Theme.typography.body, textAlign: 'center' },

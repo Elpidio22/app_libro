@@ -9,6 +9,7 @@ import {
   esPortadaTemporal,
   optimizarYGuardarPortada,
 } from './portadas';
+import { obtenerVariantesISBN } from './services/isbnService';
 
 const DATABASE_NAME = 'biblioteca.db';
 const BACKUP_VERSION = 5;
@@ -404,10 +405,14 @@ export async function obtenerLibroPorId(id) {
 }
 
 export async function obtenerLibroPorISBN(isbn) {
-  const isbnNormalizado = normalizarISBN(isbn);
-  if (!isbnNormalizado) return null;
+  const variantes = obtenerVariantesISBN(isbn);
+  if (!variantes.length) return null;
   const db = await getDatabase();
-  return db.getFirstAsync('SELECT * FROM mis_libros WHERE isbn = ?', isbnNormalizado);
+  const placeholders = variantes.map(() => '?').join(', ');
+  return db.getFirstAsync(
+    `SELECT * FROM mis_libros WHERE isbn IN (${placeholders}) LIMIT 1`,
+    variantes
+  );
 }
 
 export async function actualizarLibro(id, cambios) {
