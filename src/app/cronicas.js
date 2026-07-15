@@ -1,196 +1,236 @@
 import { useCallback, useRef, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
-import { useFocusEffect, useRouter } from 'expo-router';
+import { FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
+import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { obtenerCronicas } from '../database';
+import { obtenerDashboardAnalitico } from '../database/analyticsRepository';
+import { getDatabaseRevisions } from '../database/revisions';
 import { Theme } from '../constants/theme';
 import { PremiumCard } from '../components/PremiumUI';
+import MetricCard from '../components/analytics/MetricCard';
+import MonthlyActivityChart from '../components/analytics/MonthlyActivityChart';
+import ActivityHeatmap from '../components/analytics/ActivityHeatmap';
+import TagActivityChart from '../components/analytics/TagActivityChart';
+import ReadingEstimateCard from '../components/analytics/ReadingEstimateCard';
+import WishlistConversionCard from '../components/analytics/WishlistConversionCard';
+import MonthlyNarrative from '../components/analytics/MonthlyNarrative';
+import {
+  formatComparison,
+  formatDuration,
+  number,
+  revisionsKey,
+} from '../components/analytics/formatters';
 
-const EMPTY = {
-  terminados: 0,
-  paginas_acumuladas: 0,
-  abandonados: 0,
-  paginas_mes: 0,
-  minutos_mes: 0,
-  racha_dias: 0,
-};
+const SECTIONS = ['monthly', 'heatmap', 'tags', 'estimate', 'wishlist', 'narrative'];
+let dashboardScreenCache = null;
 
-function formatearFecha(fecha) {
-  if (!fecha) return 'fecha desconocida';
-  const [year, month, day] = fecha.slice(0, 10).split('-');
-  return `${day}/${month}/${year}`;
+export function __resetCronicasCacheForTests() {
+  dashboardScreenCache = null;
 }
 
-function formatearTiempo(minutos) {
-  const total = Math.max(0, Number(minutos) || 0);
-  if (total < 60) return `${total} min`;
-  const horas = Math.floor(total / 60);
-  const resto = total % 60;
-  return resto ? `${horas} h ${resto} min` : `${horas} h`;
+function latestMonths(data = []) {
+  const months = data.slice(-2);
+  return {
+    previous: months.length > 1 ? months[0] : {},
+    current: months[months.length - 1] || {},
+  };
 }
 
-function SmallMetric({ icon, value, label }) {
+function DashboardSkeleton() {
   return (
-    <PremiumCard style={styles.smallMetric} contentStyle={styles.smallMetricContent}>
-      <Ionicons name={icon} size={22} color={Theme.colors.accentBright} />
-      <Text style={styles.smallMetricValue}>{value}</Text>
-      <Text style={styles.metricLabel}>{label}</Text>
-    </PremiumCard>
+    <View testID="dashboard-skeleton" style={styles.skeletonScreen}>
+      <View style={[styles.skeleton, styles.skeletonTitle]} />
+      <View style={[styles.skeleton, styles.skeletonSubtitle]} />
+      <View style={styles.metricsGrid}>
+        {[0, 1, 2, 3].map((item) => <View key={item} style={[styles.skeleton, styles.skeletonCard]} />)}
+      </View>
+      <View style={[styles.skeleton, styles.skeletonChart]} />
+    </View>
+  );
+}
+
+function ErrorState({ onRetry }) {
+  return (
+    <View testID="dashboard-error" style={styles.center}>
+      <Ionicons name="cloud-offline-outline" size={48} color={Theme.colors.danger} />
+      <Text style={styles.errorTitle}>Las crónicas no pudieron abrirse</Text>
+      <Text style={styles.errorText}>No se pudieron consultar tus datos. Tu biblioteca permanece intacta.</Text>
+      <Pressable accessibilityRole="button" onPress={onRetry} style={styles.retryButton}>
+        <Text style={styles.retryText}>REINTENTAR</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+function DashboardHeader({ data, updating, warning }) {
+  const summary = data?.resumen || {};
+  const velocity = data?.velocidad || {};
+  const { current, previous } = latestMonths(data?.tendenciaMensual);
+  return (
+    <View>
+      <Text style={styles.title}>Crónicas</Text>
+      <View style={styles.subtitleRow}>
+        <Text style={styles.subtitle}>Tu actividad de lectura</Text>
+        {updating ? <Text accessibilityLiveRegion="polite" style={styles.updating}>ACTUALIZANDO</Text> : null}
+      </View>
+      {warning ? <Text style={styles.warning}>{warning}</Text> : null}
+      {!number(summary.sesiones) ? (
+        <PremiumCard style={styles.emptyBanner}>
+          <Text style={styles.emptyBannerTitle}>Tu historia empieza con una sesión</Text>
+          <Text style={styles.emptyBannerText}>Inicia una sesión desde la ficha de un libro para activar las métricas.</Text>
+        </PremiumCard>
+      ) : null}
+      <View style={styles.metricsGrid}>
+        <View style={styles.metricRow}>
+          <MetricCard
+            testID="metric-pages"
+            icon="document-text-outline"
+            label="Páginas este mes"
+            value={number(summary.paginas)}
+            detail={formatComparison(current.paginas, previous.paginas)}
+          />
+          <MetricCard
+            testID="metric-time"
+            icon="time-outline"
+            label="Tiempo leído"
+            value={formatDuration(summary.duracion_segundos)}
+            detail={formatComparison(current.duracion_segundos, previous.duracion_segundos)}
+          />
+        </View>
+        <View style={styles.metricRow}>
+          <MetricCard
+            testID="metric-days"
+            icon="calendar-outline"
+            label="Días activos"
+            value={number(summary.dias_activos)}
+            detail={formatComparison(current.dias_activos, previous.dias_activos)}
+          />
+          <MetricCard
+            testID="metric-speed"
+            icon="speedometer-outline"
+            label="Velocidad estimada"
+            value={velocity.muestraSuficiente ? `${Math.round(number(velocity.paginasPorHora))} pág/h` : '—'}
+            detail={velocity.muestraSuficiente ? `${number(velocity.sesiones_consideradas)} sesiones válidas` : 'Muestra insuficiente'}
+          />
+        </View>
+      </View>
+    </View>
   );
 }
 
 export default function CronicasScreen() {
-  const router = useRouter();
-  const isMountedRef = useRef(false);
-  const [metricas, setMetricas] = useState(EMPTY);
-  const [historial, setHistorial] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const initialCache = dashboardScreenCache?.data || null;
+  const [data, setData] = useState(initialCache);
+  const dataRef = useRef(initialCache);
+  const [initialLoading, setInitialLoading] = useState(!initialCache);
   const [refreshing, setRefreshing] = useState(false);
+  const [updating, setUpdating] = useState(false);
   const [error, setError] = useState('');
+  const mountedRef = useRef(false);
+  const requestGeneration = useRef(0);
 
-  const cargar = useCallback(async (refresh = false) => {
-    if (refresh) setRefreshing(true);
-    else setLoading(true);
+  const loadDashboard = useCallback(async ({ force = false } = {}) => {
+    const generation = ++requestGeneration.current;
+    const hasData = Boolean(dataRef.current);
+    if (force) setRefreshing(true);
+    else if (hasData) setUpdating(true);
+    else setInitialLoading(true);
     try {
-      const data = await obtenerCronicas();
-      if (!isMountedRef.current) return;
-      setMetricas({ ...EMPTY, ...data.metricas });
-      setHistorial(data.historial);
+      const nextData = await obtenerDashboardAnalitico({ force });
+      if (!mountedRef.current || generation !== requestGeneration.current) return;
+      const stableData = nextData || {};
+      dataRef.current = stableData;
+      setData(stableData);
       setError('');
+      dashboardScreenCache = {
+        data: stableData,
+        revisions: revisionsKey(stableData?._meta?.revisions || getDatabaseRevisions()),
+      };
     } catch (reason) {
-      console.error(reason);
-      if (isMountedRef.current) setError('No se pudieron leer las crónicas.');
+      console.error('No se pudo cargar el dashboard analítico.', reason);
+      if (!mountedRef.current || generation !== requestGeneration.current) return;
+      setError('No se pudieron actualizar las crónicas.');
     } finally {
-      if (isMountedRef.current) {
-        setLoading(false);
+      if (mountedRef.current && generation === requestGeneration.current) {
+        setInitialLoading(false);
         setRefreshing(false);
+        setUpdating(false);
       }
     }
   }, []);
 
   useFocusEffect(useCallback(() => {
-    let isMounted = true;
-    isMountedRef.current = true;
-    const cargarAlEnfocar = async () => {
-      setLoading(true);
-      try {
-        const data = await obtenerCronicas();
-        if (!isMounted) return;
-        setMetricas({ ...EMPTY, ...data.metricas });
-        setHistorial(data.historial);
-        setError('');
-      } catch (reason) {
-        console.error(reason);
-        if (isMounted) setError('No se pudieron leer las crónicas.');
-      } finally {
-        if (isMounted) setLoading(false);
-      }
-    };
-    cargarAlEnfocar();
+    mountedRef.current = true;
+    const currentRevisions = revisionsKey(getDatabaseRevisions());
+    const cacheIsStale = dashboardScreenCache?.revisions !== currentRevisions;
+    loadDashboard({ force: cacheIsStale });
     return () => {
-      isMounted = false;
-      isMountedRef.current = false;
+      mountedRef.current = false;
+      requestGeneration.current += 1;
     };
-  }, []));
+  }, [loadDashboard]));
 
-  if (loading) {
-    return <View style={styles.center}><ActivityIndicator size="large" color={Theme.colors.accentBright} /></View>;
-  }
+  const renderSection = useCallback(({ item }) => {
+    if (item === 'monthly') return <MonthlyActivityChart data={data?.tendenciaMensual} />;
+    if (item === 'heatmap') return <ActivityHeatmap data={data?.actividadDiaria} />;
+    if (item === 'tags') return <TagActivityChart data={data?.etiquetas} attribution={data?._meta?.etiquetas_atribucion} />;
+    if (item === 'estimate') return <ReadingEstimateCard velocity={data?.velocidad} />;
+    if (item === 'wishlist') return <WishlistConversionCard data={data?.wishlist} />;
+    return <MonthlyNarrative data={data} />;
+  }, [data]);
+
+  if (initialLoading && !data) return <DashboardSkeleton />;
+  if (error && !data) return <ErrorState onRetry={() => loadDashboard({ force: true })} />;
 
   return (
     <FlatList
-      data={historial}
-      keyExtractor={(item) => String(item.id)}
+      testID="cronicas-dashboard"
+      data={SECTIONS}
+      keyExtractor={(item) => item}
+      renderItem={renderSection}
       style={styles.screen}
       contentContainerStyle={styles.content}
+      initialNumToRender={2}
+      maxToRenderPerBatch={2}
+      windowSize={4}
+      removeClippedSubviews
+      ItemSeparatorComponent={() => <View style={styles.separator} />}
+      ListHeaderComponent={<DashboardHeader data={data} updating={updating} warning={error} />}
       refreshControl={(
         <RefreshControl
           refreshing={refreshing}
-          onRefresh={() => cargar(true)}
+          onRefresh={() => loadDashboard({ force: true })}
           tintColor={Theme.colors.accentBright}
-          colors={[Theme.colors.accent]}
+          colors={[Theme.colors.accentInteractive]}
+          progressBackgroundColor={Theme.colors.surfaceElevated}
         />
       )}
-      ListHeaderComponent={(
-        <>
-          <Text style={styles.kicker}>BITÁCORA DE LECTURA</Text>
-
-          <PremiumCard style={styles.featuredMetric} contentStyle={styles.featuredMetricContent}>
-            <View style={styles.featuredIcon}>
-              <Ionicons name="document-text-outline" size={24} color={Theme.colors.accentBright} />
-            </View>
-            <Text style={styles.featuredValue}>{metricas.paginas_acumuladas}</Text>
-            <Text style={styles.featuredLabel}>Páginas registradas en tu biblioteca</Text>
-            <Text style={styles.featuredDetail}>
-              {metricas.paginas_mes} {metricas.paginas_mes === 1 ? 'página' : 'páginas'} mediante sesiones este mes
-            </Text>
-            <View style={styles.featuredRule} />
-          </PremiumCard>
-
-          <View style={styles.smallMetricsRow}>
-            <SmallMetric icon="time-outline" value={formatearTiempo(metricas.minutos_mes)} label="Tiempo este mes" />
-            <SmallMetric icon="flame-outline" value={metricas.racha_dias} label={metricas.racha_dias === 1 ? 'Día seguido' : 'Días seguidos'} />
-          </View>
-
-          <Text style={styles.historyTitle}>Historial</Text>
-          {error ? <Text style={styles.error}>{error}</Text> : null}
-        </>
-      )}
-      renderItem={({ item }) => (
-        <Pressable onPress={() => router.push(`/libro/${item.id}`)}>
-          {({ pressed }) => (
-            <PremiumCard
-              style={[styles.historyCard, pressed && styles.historyCardPressed]}
-              contentStyle={styles.historyContent}
-            >
-              <View style={styles.timelineDot} />
-              <Text style={styles.historyText}>
-                Terminaste <Text style={styles.bookTitle}>{item.titulo}</Text> el {formatearFecha(item.fecha_fin)}
-              </Text>
-              <Ionicons name="chevron-forward" size={18} color={Theme.colors.textTertiary} />
-            </PremiumCard>
-          )}
-        </Pressable>
-      )}
-      ItemSeparatorComponent={() => <View style={styles.separator} />}
-      ListEmptyComponent={!error ? (
-        <View style={styles.empty}>
-          <Ionicons name="hourglass-outline" size={48} color={Theme.colors.accent} />
-          <Text style={styles.emptyTitle}>Aún no hay finales escritos</Text>
-          <Text style={styles.emptyText}>Los libros marcados como terminados aparecerán aquí.</Text>
-        </View>
-      ) : null}
     />
   );
 }
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: Theme.colors.background },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: Theme.colors.background },
-  content: { flexGrow: 1, padding: Theme.spacing.lg, paddingBottom: Theme.spacing.xxxl, backgroundColor: Theme.colors.background },
-  kicker: { marginTop: Theme.spacing.sm, marginBottom: Theme.spacing.xxl, color: Theme.colors.accentBright, fontFamily: Theme.typography.families.interfaceSemiBold, ...Theme.typography.label, letterSpacing: 2, textAlign: 'center' },
-  featuredMetric: { padding: Theme.spacing.xxl, backgroundColor: Theme.colors.surfaceElevated, borderColor: Theme.colors.accentStroke },
-  featuredMetricContent: { alignItems: 'center' },
-  featuredIcon: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center', marginBottom: Theme.spacing.md, backgroundColor: Theme.colors.accentGlow, borderRadius: Theme.radii.pill },
-  featuredValue: { color: Theme.colors.textPrimary, fontFamily: Theme.typography.families.editorialBold, ...Theme.typography.display, fontSize: 42, lineHeight: 48 },
-  featuredLabel: { marginTop: Theme.spacing.xs, color: Theme.colors.textSecondary, fontFamily: Theme.typography.families.interfaceMedium, ...Theme.typography.body },
-  featuredDetail: { marginTop: Theme.spacing.sm, color: Theme.colors.textTertiary, fontFamily: Theme.typography.families.interface, ...Theme.typography.secondary, textAlign: 'center' },
-  featuredRule: { width: 40, height: 2, marginTop: Theme.spacing.lg, backgroundColor: Theme.colors.accent, borderRadius: Theme.radii.pill },
-  smallMetricsRow: { flexDirection: 'row', gap: Theme.spacing.md, marginTop: Theme.spacing.md },
-  smallMetric: { flex: 1, minHeight: 124, padding: Theme.spacing.lg },
-  smallMetricContent: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  smallMetricValue: { marginTop: Theme.spacing.sm, color: Theme.colors.textPrimary, fontFamily: Theme.typography.families.editorialBold, ...Theme.typography.title },
-  metricLabel: { marginTop: Theme.spacing.xs, color: Theme.colors.textSecondary, fontFamily: Theme.typography.families.interface, ...Theme.typography.secondary, textAlign: 'center' },
-  historyTitle: { marginTop: Theme.spacing.xxxl, marginBottom: Theme.spacing.md, color: Theme.colors.textPrimary, fontFamily: Theme.typography.families.editorialBold, ...Theme.typography.title },
-  historyCard: { minHeight: 72, padding: Theme.spacing.lg },
-  historyCardPressed: { backgroundColor: Theme.colors.surfacePressed, transform: [{ scale: 0.99 }] },
-  historyContent: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: Theme.spacing.md },
-  timelineDot: { width: 8, height: 8, borderRadius: Theme.radii.pill, backgroundColor: Theme.colors.accentBright },
-  historyText: { flex: 1, color: Theme.colors.textSecondary, fontFamily: Theme.typography.families.interface, ...Theme.typography.body },
-  bookTitle: { color: Theme.colors.textPrimary, fontFamily: Theme.typography.families.editorial, ...Theme.typography.cardTitle },
-  separator: { height: Theme.spacing.sm },
-  empty: { alignItems: 'center', padding: Theme.spacing.xxxl, marginTop: Theme.spacing.lg },
-  emptyTitle: { marginTop: Theme.spacing.md, color: Theme.colors.textPrimary, fontFamily: Theme.typography.families.editorialBold, ...Theme.typography.section, textAlign: 'center' },
-  emptyText: { marginTop: Theme.spacing.sm, color: Theme.colors.textSecondary, fontFamily: Theme.typography.families.interface, ...Theme.typography.body, textAlign: 'center' },
-  error: { marginBottom: Theme.spacing.md, color: Theme.colors.danger, fontFamily: Theme.typography.families.interface, ...Theme.typography.body },
+  content: { padding: Theme.spacing.lg, paddingBottom: Theme.spacing.xxxl * 2 },
+  title: { marginTop: Theme.spacing.sm, color: Theme.colors.textPrimary, fontFamily: Theme.typography.families.interfaceSemiBold, fontSize: 34, lineHeight: 40 },
+  subtitleRow: { minHeight: 28, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Theme.spacing.sm },
+  subtitle: { color: Theme.colors.textSecondary, fontFamily: Theme.typography.families.interface, ...Theme.typography.body },
+  updating: { color: Theme.colors.accentBright, fontFamily: Theme.typography.families.interfaceSemiBold, fontSize: 9, letterSpacing: 1 },
+  warning: { padding: Theme.spacing.md, marginTop: Theme.spacing.md, color: Theme.colors.warning, fontFamily: Theme.typography.families.interface, ...Theme.typography.secondary, backgroundColor: Theme.colors.surfacePressed, borderRadius: Theme.radii.md },
+  emptyBanner: { marginTop: Theme.spacing.xl, backgroundColor: Theme.colors.surfaceElevated },
+  emptyBannerTitle: { color: Theme.colors.textPrimary, fontFamily: Theme.typography.families.interfaceSemiBold, ...Theme.typography.cardTitle },
+  emptyBannerText: { marginTop: Theme.spacing.sm, color: Theme.colors.textSecondary, fontFamily: Theme.typography.families.interface, ...Theme.typography.secondary },
+  metricsGrid: { gap: Theme.spacing.md, marginTop: Theme.spacing.xl, marginBottom: Theme.spacing.xxl },
+  metricRow: { flexDirection: 'row', gap: Theme.spacing.md },
+  separator: { height: Theme.spacing.lg },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: Theme.spacing.xxxl, backgroundColor: Theme.colors.background },
+  errorTitle: { marginTop: Theme.spacing.lg, color: Theme.colors.textPrimary, fontFamily: Theme.typography.families.interfaceSemiBold, ...Theme.typography.section, textAlign: 'center' },
+  errorText: { marginTop: Theme.spacing.sm, color: Theme.colors.textSecondary, fontFamily: Theme.typography.families.interface, ...Theme.typography.body, textAlign: 'center' },
+  retryButton: { minWidth: 160, minHeight: 48, alignItems: 'center', justifyContent: 'center', marginTop: Theme.spacing.xl, backgroundColor: Theme.colors.accent, borderRadius: Theme.radii.md },
+  retryText: { color: Theme.colors.textPrimary, fontFamily: Theme.typography.families.interfaceSemiBold, ...Theme.typography.button },
+  skeletonScreen: { flex: 1, padding: Theme.spacing.lg, backgroundColor: Theme.colors.background },
+  skeleton: { backgroundColor: Theme.colors.surfaceElevated, borderRadius: Theme.radii.md, borderWidth: 1, borderColor: Theme.colors.stroke },
+  skeletonTitle: { width: 180, height: 40, marginTop: Theme.spacing.sm },
+  skeletonSubtitle: { width: 220, height: 18, marginTop: Theme.spacing.sm },
+  skeletonCard: { flex: 1, minWidth: 142, height: 154 },
+  skeletonChart: { height: 260, marginTop: Theme.spacing.sm },
 });

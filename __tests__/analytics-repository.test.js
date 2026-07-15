@@ -254,6 +254,20 @@ describe('analyticsRepository', () => {
     expect(actualizado._meta.revisions.sessionsRevision).toBeGreaterThan(revisionAnterior);
   });
 
+  test('permite forzar una recarga aunque las revisiones no hayan cambiado', async () => {
+    const { database, analytics } = loadSubject();
+    await database.inicializarBaseDeDatos();
+    const rango = { desde: '2026-01-01', hasta: '2026-12-31' };
+
+    const primero = await analytics.obtenerDashboardAnalitico(rango);
+    const cacheado = await analytics.obtenerDashboardAnalitico(rango);
+    const forzado = await analytics.obtenerDashboardAnalitico({ ...rango, force: true });
+
+    expect(cacheado).toBe(primero);
+    expect(forzado).not.toBe(primero);
+    expect(forzado._meta.generation).toBeGreaterThan(primero._meta.generation);
+  });
+
   test('invalida cada dominio al iniciar/finalizar sesiones, editar, etiquetar y resolver deseos', async () => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date('2026-07-15T10:00:00.000Z'));
