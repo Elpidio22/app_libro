@@ -1,9 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { exportarBackupJSON, importarBackupJSON } from '../database';
+import {
+  ejecutarImportacionBackup,
+  exportarBackupJSON,
+  seleccionarBackupParaImportar,
+} from '../database';
 import { Theme } from '../constants/theme';
 import { PremiumButton, PremiumCard } from '../components/PremiumUI';
+import { IMPORT_MODES } from '../services/backupImportService';
 
 export default function AjustesScreen() {
   const isMountedRef = useRef(true);
@@ -40,15 +45,38 @@ export default function AjustesScreen() {
     }
   }
 
-  async function importarBackup() {
+  function liberarImportacion() {
+    isProcessingRef.current = false;
+    if (isMountedRef.current) setAccion(null);
+  }
+
+  function textoResultado(resultado) {
+    const resumen = (nombre, datos) => (
+      `${nombre}: ${datos.creados} creados, ${datos.actualizados} actualizados, `
+      + `${datos.omitidos} omitidos y ${datos.rechazados} rechazados`
+    );
+    const lineas = [
+      resumen('Libros', resultado.libros),
+      resumen('Deseos', resultado.lista_compras),
+      resumen('Etiquetas', resultado.etiquetas),
+      resumen('Relaciones', resultado.libro_etiquetas),
+      resumen('Sesiones', resultado.sesiones_lectura),
+    ];
+    if (resultado.advertencias.length) {
+      lineas.push(`Advertencias: ${resultado.advertencias.length}`);
+    }
+    if (resultado.errores.length) lineas.push(`Errores: ${resultado.errores.length}`);
+    return lineas.join('\n');
+  }
+
+  async function ejecutarImportacion(backup, modo, confirmadoReemplazo = false) {
     setAccion('importar');
     try {
-      const resultado = await importarBackupJSON();
+      const resultado = await ejecutarImportacionBackup(backup, { modo, confirmadoReemplazo });
       if (!isMountedRef.current) return;
-      if (resultado.cancelado) return;
       Alert.alert(
         'Respaldo importado',
-        `${resultado.importados} ${resultado.importados === 1 ? 'libro fue procesado' : 'libros fueron procesados'}. Las coincidencias se actualizaron por UUID.`
+        textoResultado(resultado)
       );
     } catch (error) {
       console.error(error);
@@ -59,23 +87,64 @@ export default function AjustesScreen() {
         );
       }
     } finally {
-      isProcessingRef.current = false;
-      if (isMountedRef.current) setAccion(null);
+      liberarImportacion();
     }
   }
 
-  function confirmarImportacion() {
-    if (isProcessingRef.current) return;
-    isProcessingRef.current = true;
+  function confirmarReemplazo(backup) {
     Alert.alert(
-      'Importar respaldo',
-      'Esta operación fusionará el archivo con la biblioteca local. Los libros con el mismo UUID serán sobrescritos con la información del respaldo. Esta acción no se puede deshacer.',
+      'Reemplazar todos los datos',
+      'Se borrarán los libros, deseos, etiquetas y sesiones actuales antes de restaurar este respaldo. Esta acción no se puede deshacer.',
       [
-        { text: 'Cancelar', style: 'cancel', onPress: () => { isProcessingRef.current = false; } },
-        { text: 'Seleccionar archivo', style: 'destructive', onPress: importarBackup },
+        { text: 'Cancelar', style: 'cancel', onPress: liberarImportacion },
+        {
+          text: 'BORRAR Y RESTAURAR',
+          style: 'destructive',
+          onPress: () => ejecutarImportacion(backup, IMPORT_MODES.REPLACE, true),
+        },
       ],
       { cancelable: false }
     );
+  }
+
+  function mostrarResumen(seleccion) {
+    const resumen = seleccion.resumen;
+    const fecha = resumen.fecha_exportacion
+      ? new Date(resumen.fecha_exportacion).toLocaleString()
+      : 'No informada';
+    Alert.alert(
+      `Respaldo versión ${resumen.version}`,
+      `Fecha: ${fecha}\nLibros: ${resumen.libros}\nDeseos: ${resumen.lista_compras}`
+      + `\nEtiquetas: ${resumen.etiquetas}\nRelaciones: ${resumen.libro_etiquetas}`
+      + `\nSesiones: ${resumen.sesiones_lectura}\n\n¿Cómo quieres restaurarlo?`,
+      [
+        { text: 'Cancelar', style: 'cancel', onPress: liberarImportacion },
+        { text: 'Fusionar', onPress: () => ejecutarImportacion(seleccion.backup, IMPORT_MODES.MERGE) },
+        { text: 'Reemplazar', style: 'destructive', onPress: () => confirmarReemplazo(seleccion.backup) },
+      ],
+      { cancelable: false }
+    );
+  }
+
+  async function seleccionarBackup() {
+    if (isProcessingRef.current) return;
+    isProcessingRef.current = true;
+    setAccion('importar');
+    try {
+      const seleccion = await seleccionarBackupParaImportar();
+      if (!isMountedRef.current) return;
+      if (seleccion.cancelado) {
+        liberarImportacion();
+        return;
+      }
+      mostrarResumen(seleccion);
+    } catch (error) {
+      console.error(error);
+      liberarImportacion();
+      if (isMountedRef.current) {
+        Alert.alert('Respaldo no válido', error.message || 'No fue posible leer el archivo seleccionado.');
+      }
+    }
   }
 
   return (
@@ -129,7 +198,7 @@ export default function AjustesScreen() {
         </View>
         <PremiumButton
           style={styles.actionButton}
-          onPress={confirmarImportacion}
+          onPress={seleccionarBackup}
           disabled={Boolean(accion)}
           accessibilityLabel="Importar respaldo de la biblioteca"
         >

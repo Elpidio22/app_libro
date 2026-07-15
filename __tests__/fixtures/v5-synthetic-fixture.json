@@ -1,0 +1,63 @@
+{
+  "tipo": "mi-biblioteca-backup",
+  "version": 5,
+  "fecha_exportacion": "2026-07-10T12:00:00.000Z",
+  "libros": [
+    {
+      "id": 41,
+      "uuid": "book-meditaciones-0001",
+      "isbn": "978-0-306-40615-7",
+      "titulo": "Meditaciones",
+      "autor": "Marco Aurelio",
+      "portada_url": "file:///data/user/0/com.origen/files/portadas/meditaciones.jpg",
+      "portada_base64": "/9j/4AAQSkZJRgABAQAAAQABAAD/2w==",
+      "paginas_totales": 212,
+      "pagina_actual": 163,
+      "estado": "leyendo",
+      "fecha_agregado": "2026-06-01T12:00:00.000Z"
+    },
+    {
+      "id": 42,
+      "titulo": "Libro sin identificadores",
+      "autor": "Autora Sintética",
+      "portada_url": "https://example.test/portada.jpg",
+      "paginas_totales": 120,
+      "pagina_actual": 0,
+      "estado": "quiero leer"
+    }
+  ],
+  "lista_compras": [
+    {
+      "id": 51,
+      "uuid": "wish-sintetico-000001",
+      "titulo": "Deseo sintético",
+      "autor": "Autor de prueba",
+      "prioridad": "alta",
+      "estado": "activo"
+    }
+  ],
+  "etiquetas": [
+    {
+      "id": 7,
+      "uuid": "tag-filosofia-000001",
+      "nombre": "Filosofía"
+    }
+  ],
+  "libro_etiquetas": [
+    {
+      "libro_id": 41,
+      "etiqueta_id": 7
+    }
+  ],
+  "sesiones_lectura": [
+    {
+      "libro_id": 41,
+      "fecha": "2026-07-09",
+      "hora_inicio": "2026-07-09T20:00:00.000Z",
+      "hora_fin": "2026-07-09T20:30:00.000Z",
+      "paginas_leidas": 12,
+      "pagina_inicio": 151,
+      "pagina_fin": 163
+    }
+  ]
+}

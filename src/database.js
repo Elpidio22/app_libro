@@ -4,13 +4,17 @@ import * as Sharing from 'expo-sharing';
 import * as DocumentPicker from 'expo-document-picker';
 import {
   confirmarPortadaTemporal,
-  descartarPortadaTemporal,
   eliminarPortadaLocal,
   esPortadaTemporal,
   optimizarYGuardarPortada,
 } from './portadas';
 import { obtenerVariantesISBN } from './services/isbnService';
 import { bumpDatabaseRevisions } from './database/revisions';
+import {
+  IMPORT_MODES,
+  importPreparedBackup,
+  validateBackupDocument,
+} from './services/backupImportService';
 
 const DATABASE_NAME = 'biblioteca.db';
 const BACKUP_VERSION = 6;
@@ -27,19 +31,6 @@ function crearUUID() {
 function normalizarUUID(value) {
   const uuid = String(value || '').trim();
   return /^[a-zA-Z0-9-]{16,80}$/.test(uuid) ? uuid : null;
-}
-
-function crearUUIDDeterministico(libro) {
-  const semilla = [libro.titulo, libro.autor, libro.isbn, libro.fecha_agregado]
-    .map((value) => String(value || '').trim().toLocaleLowerCase('es'))
-    .join('|');
-  let hashA = 2166136261;
-  let hashB = 2246822519;
-  for (let index = 0; index < semilla.length; index += 1) {
-    hashA = Math.imul(hashA ^ semilla.charCodeAt(index), 16777619);
-    hashB = Math.imul(hashB ^ semilla.charCodeAt(index), 3266489917);
-  }
-  return `legacy-${(hashA >>> 0).toString(16).padStart(8, '0')}-${(hashB >>> 0).toString(16).padStart(8, '0')}`;
 }
 
 export function getDatabase() {
@@ -416,14 +407,6 @@ export async function crearEtiqueta(nombre) {
   const etiqueta = await db.getFirstAsync('SELECT uuid, nombre FROM etiquetas WHERE nombre = ? COLLATE NOCASE', nombreLimpio);
   if (result.changes) bumpDatabaseRevisions('tags');
   return etiqueta;
-}
-
-function calcularDuracionSegundosConfiable(horaInicio, horaFin) {
-  if (!horaInicio || !horaFin) return null;
-  const inicioMs = Date.parse(String(horaInicio));
-  const finMs = Date.parse(String(horaFin));
-  if (!Number.isFinite(inicioMs) || !Number.isFinite(finMs) || finMs < inicioMs) return null;
-  return Math.round((finMs - inicioMs) / 1000);
 }
 
 export async function asignarEtiquetaALibro(libroUuid, etiquetaUuid) {
@@ -876,271 +859,51 @@ export async function exportarBackupJSON() {
   return archivo.uri;
 }
 
-async function restaurarPortadaDesdeBackup(libro) {
-  if (!libro.portada_base64) return null;
-  return optimizarYGuardarPortada(
-    `data:image/jpeg;base64,${libro.portada_base64}`,
-    { temporal: true }
-  );
-}
 
-export async function importarBackupJSON() {
+export async function seleccionarBackupParaImportar() {
   const seleccion = await DocumentPicker.getDocumentAsync({
     type: 'application/json',
     copyToCacheDirectory: true,
     multiple: false,
   });
-  if (seleccion.canceled) return { cancelado: true, importados: 0 };
+  if (seleccion.canceled) return { cancelado: true };
 
   const archivo = new File(seleccion.assets[0]);
   const contenido = await archivo.text();
-  let backup;
+  let documento;
   try {
-    backup = JSON.parse(contenido);
+    documento = JSON.parse(contenido);
   } catch {
     throw new Error('El archivo seleccionado no contiene un JSON válido.');
   }
-  if (backup?.tipo !== 'mi-biblioteca-backup' || !Array.isArray(backup.libros)) {
-    throw new Error('El archivo no es un backup válido de Mi Biblioteca.');
-  }
-  if (Number(backup.version) > BACKUP_VERSION) {
-    throw new Error('El backup fue creado por una versión más nueva de la aplicación.');
-  }
+  const { backup, summary } = validateBackupDocument(documento);
+  return { cancelado: false, backup, resumen: summary };
+}
 
-  const librosPorUUID = new Map();
-  for (const libro of backup.libros) {
-    const datos = validarLibro({
-      ...libro,
-      uuid: normalizarUUID(libro.uuid) || crearUUIDDeterministico(libro),
-    });
-    librosPorUUID.set(datos.uuid, {
-      ...datos,
-      portada_base64: libro.portada_base64 || null,
-      portada_url: null,
-      fecha_agregado: libro.fecha_agregado || new Date().toISOString(),
-      fecha_fin: libro.fecha_fin || null,
-    });
-  }
-  const librosPreparados = [...librosPorUUID.values()];
-  const deseos = Array.isArray(backup.lista_compras) ? backup.lista_compras : [];
-  const etiquetas = Array.isArray(backup.etiquetas) ? backup.etiquetas : [];
-  const relaciones = Array.isArray(backup.libro_etiquetas) ? backup.libro_etiquetas : [];
-  const sesiones = Array.isArray(backup.sesiones_lectura) ? backup.sesiones_lectura : [];
-
+export async function ejecutarImportacionBackup(
+  backup,
+  { modo = IMPORT_MODES.MERGE, confirmadoReemplazo = false } = {}
+) {
   const db = await getDatabase();
-  const portadasTemporales = [];
-  const portadasCreadas = [];
-  const portadasReemplazadas = [];
-  try {
-    for (const libro of librosPreparados) {
-      libro.portada_url = await restaurarPortadaDesdeBackup(libro);
-      if (esPortadaTemporal(libro.portada_url)) portadasTemporales.push(libro.portada_url);
-      if (esPortadaTemporal(libro.portada_url)) {
-        const existente = await db.getFirstAsync('SELECT portada_url FROM mis_libros WHERE uuid = ?', libro.uuid);
-        const confirmada = confirmarPortadaTemporal(libro.portada_url);
-        libro.portada_url = confirmada.uri;
-        if (confirmada.creada) portadasCreadas.push(confirmada.uri);
-        if (existente?.portada_url && existente.portada_url !== confirmada.uri) {
-          portadasReemplazadas.push(existente.portada_url);
-        }
-      }
-    }
-    await db.withExclusiveTransactionAsync(async (transaction) => {
-      for (const libro of librosPreparados) {
-        await transaction.runAsync(
-        `INSERT INTO mis_libros
-          (uuid, isbn, titulo, autor, portada_url, paginas_totales, pagina_actual, estado, calificacion, notas, fecha_agregado, fecha_fin)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(uuid) DO UPDATE SET
-          isbn = excluded.isbn,
-          titulo = excluded.titulo,
-          autor = excluded.autor,
-          portada_url = COALESCE(excluded.portada_url, mis_libros.portada_url),
-          paginas_totales = excluded.paginas_totales,
-          pagina_actual = excluded.pagina_actual,
-          estado = excluded.estado,
-          calificacion = excluded.calificacion,
-          notas = excluded.notas,
-          fecha_fin = excluded.fecha_fin`,
-        libro.uuid,
-        libro.isbn,
-        libro.titulo,
-        libro.autor,
-        libro.portada_url,
-        libro.paginas_totales,
-        libro.pagina_actual,
-        libro.estado,
-        libro.calificacion,
-        libro.notas,
-        libro.fecha_agregado,
-        libro.fecha_fin
-        );
-      }
-
-      for (const deseo of deseos) {
-        const titulo = String(deseo?.titulo || '').trim();
-        if (!titulo) throw new Error('El backup contiene un deseo sin título.');
-        const prioridad = ['alta', 'media', 'baja'].includes(deseo.prioridad) ? deseo.prioridad : 'media';
-        const precio = deseo.precio_estimado === null || deseo.precio_estimado === undefined || deseo.precio_estimado === ''
-          ? null
-          : Number(deseo.precio_estimado);
-        if (precio !== null && (!Number.isFinite(precio) || precio < 0)) {
-          throw new Error(`El deseo "${titulo}" tiene un precio inválido.`);
-        }
-        const uuid = normalizarUUID(deseo.uuid) || crearUUIDDeterministico({
-          ...deseo,
-          isbn: 'lista-compras',
-        });
-        const estadoDeseo = ['activo', 'adquirido', 'descartado'].includes(deseo.estado)
-          ? deseo.estado
-          : 'activo';
-        const fechaResolucion = estadoDeseo === 'activo' || !deseo.fecha_resolucion
-          ? null
-          : String(deseo.fecha_resolucion);
-        const libroUuidAdquirido = estadoDeseo === 'adquirido'
-          ? normalizarUUID(deseo.libro_uuid_adquirido)
-          : null;
-        await transaction.runAsync(
-          `INSERT INTO lista_compras
-            (uuid, titulo, autor, prioridad, precio_estimado, fecha_agregado, estado, fecha_resolucion, libro_uuid_adquirido)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(uuid) DO UPDATE SET
-             titulo = excluded.titulo,
-             autor = excluded.autor,
-             prioridad = excluded.prioridad,
-             precio_estimado = excluded.precio_estimado,
-             estado = excluded.estado,
-             fecha_resolucion = excluded.fecha_resolucion,
-             libro_uuid_adquirido = excluded.libro_uuid_adquirido`,
-          uuid,
-          titulo,
-          String(deseo.autor || '').trim() || null,
-          prioridad,
-          precio,
-          deseo.fecha_agregado || new Date().toISOString(),
-          estadoDeseo,
-          fechaResolucion,
-          libroUuidAdquirido
-        );
-      }
-
-      const etiquetaUuidMap = new Map();
-      for (const etiqueta of etiquetas) {
-        const nombre = String(etiqueta?.nombre || '').trim();
-        if (!nombre) throw new Error('El backup contiene una etiqueta sin nombre.');
-        const uuidImportado = normalizarUUID(etiqueta.uuid)
-          || crearUUIDDeterministico({ titulo: nombre, isbn: 'etiqueta' });
-        const existentePorNombre = await transaction.getFirstAsync(
-          'SELECT uuid FROM etiquetas WHERE nombre = ? COLLATE NOCASE',
-          nombre
-        );
-        const uuidFinal = existentePorNombre?.uuid || uuidImportado;
-        if (!existentePorNombre) {
-          await transaction.runAsync(
-            `INSERT INTO etiquetas (uuid, nombre) VALUES (?, ?)
-             ON CONFLICT(uuid) DO UPDATE SET nombre = excluded.nombre`,
-            uuidFinal,
-            nombre
-          );
-        }
-        etiquetaUuidMap.set(String(etiqueta.uuid || uuidImportado), uuidFinal);
-        etiquetaUuidMap.set(uuidImportado, uuidFinal);
-      }
-
-      for (const relacion of relaciones) {
-        const libroUuid = normalizarUUID(relacion?.libro_uuid);
-        const etiquetaImportada = String(relacion?.etiqueta_uuid || '');
-        const etiquetaUuid = etiquetaUuidMap.get(etiquetaImportada) || normalizarUUID(etiquetaImportada);
-        if (!libroUuid || !etiquetaUuid) throw new Error('El backup contiene una relación de etiquetas inválida.');
-        await transaction.runAsync(
-          `INSERT INTO libro_etiquetas (libro_uuid, etiqueta_uuid)
-           VALUES (?, ?) ON CONFLICT(libro_uuid, etiqueta_uuid) DO NOTHING`,
-          libroUuid,
-          etiquetaUuid
-        );
-      }
-
-      for (const sesion of sesiones) {
-        const libroUuid = normalizarUUID(sesion?.libro_uuid);
-        const fecha = String(sesion?.fecha || '').trim();
-        const horaInicio = String(sesion?.hora_inicio || '').trim();
-        const horaFin = sesion?.hora_fin ? String(sesion.hora_fin) : null;
-        const paginasLeidas = enteroNoNegativo(sesion?.paginas_leidas);
-        const paginaInicio = sesion?.pagina_inicio === null || sesion?.pagina_inicio === undefined
-          ? null
-          : enteroNoNegativo(sesion.pagina_inicio);
-        const paginaFin = sesion?.pagina_fin === null || sesion?.pagina_fin === undefined
-          ? null
-          : enteroNoNegativo(sesion.pagina_fin);
-        const duracionSegundos = sesion?.duracion_segundos === null || sesion?.duracion_segundos === undefined
-          ? calcularDuracionSegundosConfiable(horaInicio, horaFin)
-          : enteroNoNegativo(sesion.duracion_segundos);
-        if (!libroUuid || !fecha || !horaInicio || paginasLeidas === null) {
-          throw new Error('El backup contiene una sesión de lectura inválida.');
-        }
-        if ((sesion?.pagina_inicio != null && paginaInicio === null)
-          || (sesion?.pagina_fin != null && paginaFin === null)
-          || (sesion?.duracion_segundos != null && duracionSegundos === null)
-          || (paginaInicio !== null && paginaFin !== null && paginaFin < paginaInicio)) {
-          throw new Error('El backup contiene páginas o duración de sesión inválidas.');
-        }
-        let existente = await transaction.getFirstAsync(
-          'SELECT id FROM sesiones_lectura WHERE libro_uuid = ? AND hora_inicio = ?',
-          libroUuid,
-          horaInicio
-        );
-        if (!existente && !horaFin) {
-          existente = await transaction.getFirstAsync(
-            'SELECT id FROM sesiones_lectura WHERE libro_uuid = ? AND hora_fin IS NULL',
-            libroUuid
-          );
-        }
-        if (existente) {
-          await transaction.runAsync(
-            `UPDATE sesiones_lectura
-             SET fecha = ?, hora_inicio = ?, hora_fin = ?, paginas_leidas = ?,
-                 pagina_inicio = ?, pagina_fin = ?, duracion_segundos = ?
-             WHERE id = ?`,
-            fecha,
-            horaInicio,
-            horaFin,
-            paginasLeidas,
-            paginaInicio,
-            paginaFin,
-            duracionSegundos,
-            existente.id
-          );
-        } else {
-          await transaction.runAsync(
-            `INSERT INTO sesiones_lectura
-              (libro_uuid, fecha, hora_inicio, hora_fin, paginas_leidas,
-               pagina_inicio, pagina_fin, duracion_segundos)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-            libroUuid,
-            fecha,
-            horaInicio,
-            horaFin,
-            paginasLeidas,
-            paginaInicio,
-            paginaFin,
-            duracionSegundos
-          );
-        }
-      }
-    });
-  } catch (error) {
-    portadasCreadas.forEach(eliminarPortadaLocal);
-    throw error;
-  } finally {
-    portadasTemporales.forEach(descartarPortadaTemporal);
-  }
-  portadasReemplazadas.forEach(eliminarPortadaLocal);
+  const resultado = await importPreparedBackup({
+    db,
+    document: backup,
+    mode: modo,
+    replaceConfirmed: confirmadoReemplazo,
+  });
   bumpDatabaseRevisions('books', 'sessions', 'tags', 'wishlist');
   return {
+    ...resultado,
     cancelado: false,
-    importados: librosPreparados.length,
-    deseos_importados: deseos.length,
-    etiquetas_importadas: etiquetas.length,
-    sesiones_importadas: sesiones.length,
+    importados: resultado.libros.creados + resultado.libros.actualizados,
+    deseos_importados: resultado.lista_compras.creados + resultado.lista_compras.actualizados,
+    etiquetas_importadas: resultado.etiquetas.creados + resultado.etiquetas.actualizados,
+    sesiones_importadas: resultado.sesiones_lectura.creados + resultado.sesiones_lectura.actualizados,
   };
+}
+
+export async function importarBackupJSON(options = {}) {
+  const seleccion = await seleccionarBackupParaImportar();
+  if (seleccion.cancelado) return { cancelado: true, importados: 0 };
+  return ejecutarImportacionBackup(seleccion.backup, options);
 }
