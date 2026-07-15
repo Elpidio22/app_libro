@@ -202,6 +202,7 @@ async function consultarDashboard(db, rango) {
   const paginasVelocidad = numero(velocidadRaw?.paginas);
   const segundosVelocidad = numero(velocidadRaw?.duracion_segundos);
   const velocidadPorHora = segundosVelocidad > 0 ? (paginasVelocidad * 3600) / segundosVelocidad : 0;
+  const muestraSuficiente = numero(velocidadRaw?.sesiones) >= 2 && velocidadPorHora > 0;
   const totalResueltos = numero(estadoLibros?.terminados) + numero(estadoLibros?.abandonados);
   const deseosResueltos = numero(wishlistRaw?.adquiridos) + numero(wishlistRaw?.descartados);
 
@@ -224,11 +225,12 @@ async function consultarDashboard(db, rango) {
       tasa_finalizacion: totalResueltos > 0 ? numero(estadoLibros?.terminados) / totalResueltos : 0,
     },
     velocidad: {
-      paginas_por_hora: velocidadPorHora,
+      paginasPorHora: velocidadPorHora,
+      muestraSuficiente,
       sesiones_consideradas: numero(velocidadRaw?.sesiones),
       tiempo_total_segundos: segundosVelocidad,
       paginas_muestra: paginasVelocidad,
-      estimaciones_restantes: librosLeyendo.map((libro) => {
+      estimaciones_restantes: muestraSuficiente ? librosLeyendo.map((libro) => {
         const paginasRestantes = Math.max(0, numero(libro.paginas_totales) - numero(libro.pagina_actual));
         return {
           libro_uuid: libro.uuid,
@@ -237,7 +239,7 @@ async function consultarDashboard(db, rango) {
           paginas_restantes: paginasRestantes,
           segundos_estimados: velocidadPorHora > 0 ? Math.round((paginasRestantes / velocidadPorHora) * 3600) : null,
         };
-      }),
+      }) : [],
     },
     actividadDiaria: actividadDiaria.map((item) => ({
       fecha: item.fecha,
@@ -260,7 +262,7 @@ async function consultarDashboard(db, rango) {
   };
 }
 
-export async function obtenerDashboardAnalitico(options = {}) {
+async function obtenerDashboardAnaliticoInterno(options = {}, retryCount = 0) {
   const rango = validarRango(options);
   const revisionsAtStart = getDatabaseRevisions();
   const cacheKey = `${rango.desde}|${rango.hasta}`;
@@ -271,6 +273,9 @@ export async function obtenerDashboardAnalitico(options = {}) {
   const snapshot = await ejecutarSnapshot(db, (connection) => consultarDashboard(connection, rango));
   const revisionsAtEnd = getDatabaseRevisions();
   const needsRecompute = !mismasRevisiones(revisionsAtStart, revisionsAtEnd);
+  if (needsRecompute && retryCount < 1) {
+    return obtenerDashboardAnaliticoInterno(options, retryCount + 1);
+  }
   const value = {
     ...snapshot,
     _meta: {
@@ -287,6 +292,10 @@ export async function obtenerDashboardAnalitico(options = {}) {
     cache = { key: cacheKey, revisions: revisionsAtEnd, value };
   }
   return value;
+}
+
+export async function obtenerDashboardAnalitico(options = {}) {
+  return obtenerDashboardAnaliticoInterno(options);
 }
 
 export async function obtenerPlanesDashboardAnalitico({ desde, hasta } = {}) {

@@ -447,6 +447,10 @@ describe('integridad de database.js', () => {
         libro_uuid: bookUuid, fecha: '2026-06-03',
         hora_inicio: '2026-06-03T10:00:00.000Z', hora_fin: '2026-06-03T10:20:00.000Z',
         paginas_leidas: 12,
+      }, {
+        libro_uuid: bookUuid, fecha: '2026-06-04',
+        hora_inicio: '2026-06-04T11:00:00.000Z', hora_fin: '2026-06-04T10:00:00.000Z',
+        paginas_leidas: 7,
       }],
     }));
     documentPicker.__setResult({ canceled: false, assets: [{ uri: backupFile.uri }] });
@@ -457,6 +461,12 @@ describe('integridad de database.js', () => {
     expect(state.listaCompras[0]).toMatchObject({ estado: 'activo', fecha_resolucion: null });
     expect(state.sesionesLectura[0]).toMatchObject({
       paginas_leidas: 12,
+      pagina_inicio: null,
+      pagina_fin: null,
+      duracion_segundos: 1200,
+    });
+    expect(state.sesionesLectura[1]).toMatchObject({
+      paginas_leidas: 7,
       pagina_inicio: null,
       pagina_fin: null,
       duracion_segundos: null,
@@ -483,6 +493,32 @@ describe('integridad de database.js', () => {
         fecha_resolucion: '2026-07-15T12:00:00.000Z',
       });
       await expect(database.getDeseos()).resolves.toEqual([]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('descartar conserva el historial, no crea un libro y deja de mostrar el deseo como activo', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-07-15T13:00:00.000Z'));
+    try {
+      const { database, sqlite } = loadSubject();
+      await database.inicializarBaseDeDatos();
+      const wishId = await database.addDeseo({ titulo: 'Deseo descartado', autor: 'Autor' });
+
+      await expect(database.deleteDeseo(wishId)).resolves.toBe(1);
+      const state = sqlite.__getState();
+
+      expect(state.listaCompras).toHaveLength(1);
+      expect(state.listaCompras[0]).toMatchObject({
+        id: wishId,
+        estado: 'descartado',
+        libro_uuid_adquirido: null,
+        fecha_resolucion: '2026-07-15T13:00:00.000Z',
+      });
+      expect(state.misLibros).toHaveLength(0);
+      await expect(database.getDeseos()).resolves.toEqual([]);
+      await expect(database.marcarComoAdquirido(wishId)).rejects.toThrow(/ya no está activo/i);
     } finally {
       jest.useRealTimers();
     }

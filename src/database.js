@@ -418,6 +418,14 @@ export async function crearEtiqueta(nombre) {
   return etiqueta;
 }
 
+function calcularDuracionSegundosConfiable(horaInicio, horaFin) {
+  if (!horaInicio || !horaFin) return null;
+  const inicioMs = Date.parse(String(horaInicio));
+  const finMs = Date.parse(String(horaFin));
+  if (!Number.isFinite(inicioMs) || !Number.isFinite(finMs) || finMs < inicioMs) return null;
+  return Math.round((finMs - inicioMs) / 1000);
+}
+
 export async function asignarEtiquetaALibro(libroUuid, etiquetaUuid) {
   const db = await getDatabase();
   const result = await db.runAsync(
@@ -1065,7 +1073,7 @@ export async function importarBackupJSON() {
           ? null
           : enteroNoNegativo(sesion.pagina_fin);
         const duracionSegundos = sesion?.duracion_segundos === null || sesion?.duracion_segundos === undefined
-          ? null
+          ? calcularDuracionSegundosConfiable(horaInicio, horaFin)
           : enteroNoNegativo(sesion.duracion_segundos);
         if (!libroUuid || !fecha || !horaInicio || paginasLeidas === null) {
           throw new Error('El backup contiene una sesión de lectura inválida.');

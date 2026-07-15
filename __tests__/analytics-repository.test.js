@@ -107,8 +107,9 @@ describe('analyticsRepository', () => {
         dias_activos: 3,
         libros_terminados: 1,
       });
-      expect(dashboard.velocidad.paginas_por_hora).toBeCloseTo((40 * 3600) / 4200, 5);
-      expect(dashboard.velocidad.paginas_por_hora).not.toBeCloseTo(45, 1);
+      expect(dashboard.velocidad.paginasPorHora).toBeCloseTo((40 * 3600) / 4200, 5);
+      expect(dashboard.velocidad.paginasPorHora).not.toBeCloseTo(45, 1);
+      expect(dashboard.velocidad.muestraSuficiente).toBe(true);
       expect(dashboard.actividadDiaria).toEqual([
         expect.objectContaining({ fecha: '2026-07-09', paginas: 5, duracion_segundos: 0 }),
         expect.objectContaining({ fecha: '2026-07-10', paginas: 10, duracion_segundos: 600 }),
@@ -132,6 +133,108 @@ describe('analyticsRepository', () => {
     }
   });
 
+  test.each([
+    { paginas: 30, segundos: 3600 },
+    { paginas: 15, segundos: 1800 },
+  ])('$paginas páginas en $segundos segundos son 30 páginas por hora', async ({ paginas, segundos }) => {
+    const { database, analytics } = loadSubject();
+    await database.inicializarBaseDeDatos();
+    const bookId = await database.insertarLibro({ titulo: 'Unidad de velocidad', estado: 'leyendo', pagina_actual: 0 });
+    const book = await database.obtenerLibroPorId(bookId);
+    const db = await database.getDatabase();
+    await insertarSesion(db, {
+      libroUuid: book.uuid,
+      fecha: '2026-07-10',
+      inicio: '2026-07-10T10:00:00.000Z',
+      fin: new Date(Date.parse('2026-07-10T10:00:00.000Z') + segundos * 1000).toISOString(),
+      paginas,
+      paginaInicio: 0,
+      paginaFin: paginas,
+      duracion: segundos,
+    });
+
+    const dashboard = await analytics.obtenerDashboardAnalitico({ desde: '2026-07-01', hasta: '2026-07-31' });
+    expect(dashboard.velocidad.paginasPorHora).toBe(30);
+    expect(dashboard.velocidad.muestraSuficiente).toBe(false);
+    expect(dashboard.velocidad.estimaciones_restantes).toEqual([]);
+  });
+
+  test('solo estima con dos sesiones temporizadas, páginas restantes positivas y libros en lectura', async () => {
+    const { database, analytics, revisions } = loadSubject();
+    await database.inicializarBaseDeDatos();
+    const readingId = await database.insertarLibro({
+      titulo: 'Libro por estimar', estado: 'leyendo', pagina_actual: 20, paginas_totales: 100,
+    });
+    await database.insertarLibro({
+      titulo: 'Libro finalizado', estado: 'terminado', pagina_actual: 100, paginas_totales: 100,
+    });
+    const reading = await database.obtenerLibroPorId(readingId);
+    const db = await database.getDatabase();
+    await insertarSesion(db, {
+      libroUuid: reading.uuid, fecha: '2026-07-10',
+      inicio: '2026-07-10T10:00:00.000Z', fin: '2026-07-10T11:00:00.000Z',
+      paginas: 30, paginaInicio: 0, paginaFin: 30, duracion: 3600,
+    });
+    await insertarSesion(db, {
+      libroUuid: reading.uuid, fecha: '2026-07-11',
+      inicio: '2026-07-11T10:00:00.000Z', fin: '2026-07-11T10:30:00.000Z',
+      paginas: 15, paginaInicio: null, paginaFin: null, duracion: null,
+    });
+    revisions.bumpDatabaseRevisions('sessions');
+
+    const insuficiente = await analytics.obtenerDashboardAnalitico({ desde: '2026-07-01', hasta: '2026-07-31' });
+    expect(insuficiente.velocidad).toMatchObject({ paginasPorHora: 30, muestraSuficiente: false });
+    expect(insuficiente.velocidad.estimaciones_restantes).toEqual([]);
+
+    await insertarSesion(db, {
+      libroUuid: reading.uuid, fecha: '2026-07-12',
+      inicio: '2026-07-12T10:00:00.000Z', fin: '2026-07-12T10:30:00.000Z',
+      paginas: 15, paginaInicio: 30, paginaFin: 45, duracion: 1800,
+    });
+    revisions.bumpDatabaseRevisions('sessions');
+    const suficiente = await analytics.obtenerDashboardAnalitico({ desde: '2026-07-01', hasta: '2026-07-31' });
+
+    expect(suficiente.velocidad).toMatchObject({ paginasPorHora: 30, muestraSuficiente: true });
+    expect(suficiente.velocidad.estimaciones_restantes).toEqual([
+      expect.objectContaining({
+        libro_uuid: reading.uuid,
+        paginas_restantes: 80,
+        segundos_estimados: 9600,
+      }),
+    ]);
+    expect(suficiente.velocidad.estimaciones_restantes).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ titulo: 'Libro finalizado' }),
+    ]));
+  });
+
+  test('no divide por cero ni estima cuando la muestra no contiene páginas leídas', async () => {
+    const { database, analytics, revisions } = loadSubject();
+    await database.inicializarBaseDeDatos();
+    const bookId = await database.insertarLibro({
+      titulo: 'Sin avance', estado: 'leyendo', pagina_actual: 25, paginas_totales: 100,
+    });
+    const book = await database.obtenerLibroPorId(bookId);
+    const db = await database.getDatabase();
+    for (const [dia, inicio] of [['10', '10:00'], ['11', '11:00']]) {
+      await insertarSesion(db, {
+        libroUuid: book.uuid,
+        fecha: `2026-07-${dia}`,
+        inicio: `2026-07-${dia}T${inicio}:00.000Z`,
+        fin: `2026-07-${dia}T${inicio.slice(0, 3)}30:00.000Z`,
+        paginas: 0,
+        paginaInicio: 25,
+        paginaFin: 25,
+        duracion: 1800,
+      });
+    }
+    revisions.bumpDatabaseRevisions('sessions');
+
+    const dashboard = await analytics.obtenerDashboardAnalitico({ desde: '2026-07-01', hasta: '2026-07-31' });
+    expect(dashboard.velocidad).toMatchObject({ paginasPorHora: 0, muestraSuficiente: false });
+    expect(Number.isFinite(dashboard.velocidad.paginasPorHora)).toBe(true);
+    expect(dashboard.velocidad.estimaciones_restantes).toEqual([]);
+  });
+
   test('invalida la caché por revisiones y expone generaciones monotónicas', async () => {
     const { database, analytics, revisions } = loadSubject();
     await database.inicializarBaseDeDatos();
@@ -149,6 +252,107 @@ describe('analyticsRepository', () => {
     expect(actualizado).not.toBe(primero);
     expect(actualizado._meta.generation).toBeGreaterThan(primero._meta.generation);
     expect(actualizado._meta.revisions.sessionsRevision).toBeGreaterThan(revisionAnterior);
+  });
+
+  test('invalida cada dominio al iniciar/finalizar sesiones, editar, etiquetar y resolver deseos', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-07-15T10:00:00.000Z'));
+    try {
+      const { database, revisions } = loadSubject();
+      await database.inicializarBaseDeDatos();
+      const bookId = await database.insertarLibro({
+        titulo: 'Dominios', estado: 'leyendo', pagina_actual: 10, paginas_totales: 100,
+      });
+      const book = await database.obtenerLibroPorId(bookId);
+
+      const antesInicio = revisions.getDatabaseRevisions();
+      await database.iniciarSesionLectura(book.uuid, 10);
+      const trasInicio = revisions.getDatabaseRevisions();
+      expect(trasInicio.sessionsRevision).toBe(antesInicio.sessionsRevision + 1);
+      expect(trasInicio.booksRevision).toBe(antesInicio.booksRevision);
+
+      jest.setSystemTime(new Date('2026-07-15T10:30:00.000Z'));
+      await database.terminarSesionLectura(book.uuid, 25);
+      const trasCierre = revisions.getDatabaseRevisions();
+      expect(trasCierre.sessionsRevision).toBe(trasInicio.sessionsRevision + 1);
+      expect(trasCierre.booksRevision).toBe(trasInicio.booksRevision + 1);
+
+      await database.actualizarProgreso(bookId, 30, 'leyendo');
+      const trasProgreso = revisions.getDatabaseRevisions();
+      expect(trasProgreso.booksRevision).toBe(trasCierre.booksRevision + 1);
+
+      const etiqueta = await database.crearEtiqueta('Auditoría');
+      const trasCrearEtiqueta = revisions.getDatabaseRevisions();
+      expect(trasCrearEtiqueta.tagsRevision).toBe(trasProgreso.tagsRevision + 1);
+      await database.asignarEtiquetaALibro(book.uuid, etiqueta.uuid);
+      const trasAsignarEtiqueta = revisions.getDatabaseRevisions();
+      expect(trasAsignarEtiqueta.tagsRevision).toBe(trasCrearEtiqueta.tagsRevision + 1);
+
+      const adquirido = await database.addDeseo({ titulo: 'Adquirido' });
+      const trasAgregarAdquirido = revisions.getDatabaseRevisions();
+      await database.marcarComoAdquirido(adquirido);
+      const trasAdquirir = revisions.getDatabaseRevisions();
+      expect(trasAdquirir.wishlistRevision).toBe(trasAgregarAdquirido.wishlistRevision + 1);
+      expect(trasAdquirir.booksRevision).toBe(trasAgregarAdquirido.booksRevision + 1);
+
+      const descartado = await database.addDeseo({ titulo: 'Descartado' });
+      const trasAgregarDescartado = revisions.getDatabaseRevisions();
+      await database.deleteDeseo(descartado);
+      const trasDescartar = revisions.getDatabaseRevisions();
+      expect(trasDescartar.wishlistRevision).toBe(trasAgregarDescartado.wishlistRevision + 1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('una respuesta analítica antigua no sobrescribe una respuesta nueva en caché', async () => {
+    const { database, analytics } = loadSubject();
+    await database.inicializarBaseDeDatos();
+    const db = await database.getDatabase();
+    const originalGetFirstAsync = db.getFirstAsync.bind(db);
+    let liberarConsultaAntigua;
+    let primeraConsulta = true;
+    db.getFirstAsync = (...args) => {
+      if (!primeraConsulta) return originalGetFirstAsync(...args);
+      primeraConsulta = false;
+      return new Promise((resolve, reject) => {
+        liberarConsultaAntigua = () => originalGetFirstAsync(...args).then(resolve, reject);
+      });
+    };
+
+    const rango = { desde: '2026-01-01', hasta: '2026-12-31' };
+    const antiguaPromise = analytics.obtenerDashboardAnalitico(rango);
+    while (!liberarConsultaAntigua) await Promise.resolve();
+    const nueva = await analytics.obtenerDashboardAnalitico(rango);
+    liberarConsultaAntigua();
+    const antigua = await antiguaPromise;
+    const cacheada = await analytics.obtenerDashboardAnalitico(rango);
+
+    expect(antigua._meta.generation).toBeLessThan(nueva._meta.generation);
+    expect(cacheada).toBe(nueva);
+  });
+
+  test('needsRecompute provoca una recomputación y entrega un snapshot estable', async () => {
+    const { database, analytics, revisions } = loadSubject();
+    await database.inicializarBaseDeDatos();
+    const db = await database.getDatabase();
+    const originalGetFirstAsync = db.getFirstAsync.bind(db);
+    let revisionInyectada = false;
+    db.getFirstAsync = async (...args) => {
+      const result = await originalGetFirstAsync(...args);
+      if (!revisionInyectada) {
+        revisionInyectada = true;
+        revisions.bumpDatabaseRevisions('sessions');
+      }
+      return result;
+    };
+
+    const dashboard = await analytics.obtenerDashboardAnalitico({ desde: '2026-01-01', hasta: '2026-12-31' });
+
+    expect(revisionInyectada).toBe(true);
+    expect(dashboard._meta.generation).toBeGreaterThanOrEqual(2);
+    expect(dashboard._meta.needsRecompute).toBe(false);
+    expect(dashboard._meta.revisions.sessionsRevision).toBe(1);
   });
 
   test('ejecuta EXPLAIN QUERY PLAN para las consultas principales', async () => {

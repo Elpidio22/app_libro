@@ -67,7 +67,7 @@ function DeseoRow({ deseo, ocupado, onAdquirir, onEliminar }) {
           style={styles.deleteButton}
           onPress={onEliminar}
           disabled={ocupado}
-          accessibilityLabel={`Eliminar ${deseo.titulo}`}
+          accessibilityLabel={`Descartar ${deseo.titulo}`}
         >
           <Ionicons name="trash-outline" size={19} color={Theme.colors.textSecondary} />
         </Pressable>
@@ -219,10 +219,10 @@ export default function DeseosScreen() {
   }
 
   function confirmarEliminacion(deseo) {
-    Alert.alert('Eliminar deseo', `¿Quitar “${deseo.titulo}” de la lista?`, [
+    Alert.alert('Descartar deseo', `¿Marcar “${deseo.titulo}” como descartado?`, [
       { text: 'Cancelar', style: 'cancel' },
       {
-        text: 'Eliminar',
+        text: 'Descartar',
         style: 'destructive',
         onPress: async () => {
           if (isProcessing.current) return;
@@ -233,7 +233,7 @@ export default function DeseosScreen() {
             await cargarDeseos();
           } catch (reason) {
             console.error(reason);
-            if (isMountedRef.current) Alert.alert('No se pudo eliminar', 'El libro permanece en la lista.');
+            if (isMountedRef.current) Alert.alert('No se pudo descartar', 'El libro permanece activo en la lista.');
           } finally {
             isProcessing.current = false;
             if (isMountedRef.current) setProcesandoId(null);
