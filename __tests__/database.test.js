@@ -156,6 +156,19 @@ describe('integridad de database.js', () => {
     ]);
   });
 
+  test('detecta como duplicados el ISBN-10 y su ISBN-13 equivalente', async () => {
+    const { database } = loadSubject();
+    await database.inicializarBaseDeDatos();
+    const id = await database.insertarLibro({
+      isbn: '0306406152',
+      titulo: 'Edición equivalente',
+      estado: 'quiero leer',
+      pagina_actual: 0,
+    });
+
+    await expect(database.obtenerLibroPorISBN('9780306406157')).resolves.toMatchObject({ id });
+  });
+
   test('restaurar dos veces el mismo UUID actualiza sin duplicar filas', async () => {
     const { database, sqlite, fileSystem, documentPicker } = loadSubject();
     await database.inicializarBaseDeDatos();
