@@ -5,19 +5,22 @@ import { Theme } from '../../constants/theme';
 import { formatDuration, formatPercent, number } from './formatters';
 
 function WishlistConversionCard({ data = {} }) {
+  const safeData = data && typeof data === 'object' ? data : {};
   return (
     <PremiumCard testID="wishlist-conversion" style={styles.card}>
       <Text style={styles.title}>La cacería</Text>
       <Text style={styles.subtitle}>Conversión de tu lista de deseos</Text>
       <View style={styles.metrics}>
-        <View style={styles.metric}><Text style={styles.value}>{number(data.activos)}</Text><Text style={styles.label}>Activos</Text></View>
+        <View style={styles.metric}><Text style={styles.value}>{number(safeData.activos)}</Text><Text style={styles.label}>Activos</Text></View>
         <View style={styles.divider} />
-        <View style={styles.metric}><Text style={styles.value}>{number(data.adquiridos)}</Text><Text style={styles.label}>Adquiridos</Text></View>
+        <View style={styles.metric}><Text style={styles.value}>{number(safeData.adquiridos)}</Text><Text style={styles.label}>Adquiridos</Text></View>
         <View style={styles.divider} />
-        <View style={styles.metric}><Text style={styles.value}>{formatPercent(data.tasa_adquisicion)}</Text><Text style={styles.label}>Tasa</Text></View>
+        <View style={styles.metric}><Text style={styles.value}>{number(safeData.descartados)}</Text><Text style={styles.label}>Descartados</Text></View>
+        <View style={styles.divider} />
+        <View style={styles.metric}><Text style={styles.value}>{formatPercent(safeData.tasa_adquisicion)}</Text><Text style={styles.label}>Tasa</Text></View>
       </View>
-      {data.segundos_promedio_hasta_adquirir != null ? (
-        <Text style={styles.detail}>Tiempo medio hasta adquirir: {formatDuration(data.segundos_promedio_hasta_adquirir)}</Text>
+      {safeData.segundos_promedio_hasta_adquirir != null ? (
+        <Text style={styles.detail}>Tiempo medio hasta adquirir: {formatDuration(safeData.segundos_promedio_hasta_adquirir)}</Text>
       ) : <Text style={styles.detail}>Todavía no hay tiempo medio disponible.</Text>}
     </PremiumCard>
   );

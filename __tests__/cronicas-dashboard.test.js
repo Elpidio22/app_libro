@@ -29,6 +29,8 @@ const {
   __resetCronicasCacheForTests,
 } = require('../src/app/cronicas');
 const { default: TagActivityChart } = require('../src/components/analytics/TagActivityChart');
+const { default: MonthlyActivityChart } = require('../src/components/analytics/MonthlyActivityChart');
+const { default: ActivityHeatmap } = require('../src/components/analytics/ActivityHeatmap');
 const { default: ReadingEstimateCard } = require('../src/components/analytics/ReadingEstimateCard');
 const { default: WishlistConversionCard } = require('../src/components/analytics/WishlistConversionCard');
 const { default: MonthlyNarrative } = require('../src/components/analytics/MonthlyNarrative');
@@ -143,6 +145,7 @@ describe('Dashboard de Crónicas', () => {
     );
 
     expect(screen.getByText('Te quedan aproximadamente 3 h 20 min')).toBeTruthy();
+    expect(screen.getByText('Descartados')).toBeTruthy();
     expect(screen.getByText('67%')).toBeTruthy();
     expect(screen.getByText(/Este mes leíste 324 páginas durante 8 h 12 min/)).toBeTruthy();
   });
@@ -174,6 +177,34 @@ describe('Dashboard de Crónicas', () => {
     );
 
     expect(screen.getByText('Aún estamos aprendiendo tu ritmo')).toBeTruthy();
+  });
+
+  test('tolera secciones nulas y mantiene estados vacíos utilizables', async () => {
+    const screen = await render(
+      <>
+        <MonthlyActivityChart data={null} />
+        <ActivityHeatmap data={null} />
+        <TagActivityChart data={null} />
+        <ReadingEstimateCard velocity={null} />
+        <WishlistConversionCard data={null} />
+      </>
+    );
+
+    expect(screen.getByText('Todavía no hay actividad mensual para representar.')).toBeTruthy();
+    expect(screen.getByText('Asigna etiquetas a tus libros para descubrir patrones.')).toBeTruthy();
+    expect(screen.getByText('Aún estamos aprendiendo tu ritmo')).toBeTruthy();
+    expect(screen.getByText('Descartados')).toBeTruthy();
+    expect(screen.getByText('Todavía no hay tiempo medio disponible.')).toBeTruthy();
+  });
+
+  test('mantiene seguro el gráfico cuando todos los valores son cero', async () => {
+    const screen = await render(<MonthlyActivityChart data={[
+      { mes: '2026-06', paginas: 0, duracion_segundos: 0 },
+      { mes: '2026-07', paginas: 0, duracion_segundos: 0 },
+    ]} />);
+
+    expect(screen.queryByTestId('monthly-svg-chart')).toBeNull();
+    expect(screen.getByText('Todavía no hay actividad mensual para representar.')).toBeTruthy();
   });
 
   test('muestra etiquetas superpuestas como actividad y no como porcentajes exclusivos', async () => {

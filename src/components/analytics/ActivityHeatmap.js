@@ -12,7 +12,9 @@ function localDate(value = new Date()) {
 }
 
 function buildDays(data) {
-  const byDate = new Map(data.map((item) => [item.fecha, number(item.paginas)]));
+  const byDate = new Map((Array.isArray(data) ? data : [])
+    .filter((item) => item?.fecha)
+    .map((item) => [item.fecha, number(item.paginas)]));
   const end = new Date(`${localDate()}T12:00:00`);
   return Array.from({ length: DAYS }, (_, index) => {
     const date = new Date(end);
@@ -74,9 +76,9 @@ const styles = StyleSheet.create({
   week: { gap: 4 },
   day: { width: 14, height: 14, borderRadius: 3, borderWidth: 1, borderColor: Theme.colors.stroke },
   level0: { backgroundColor: Theme.colors.surface },
-  level1: { backgroundColor: 'rgba(184,144,91,0.22)' },
-  level2: { backgroundColor: 'rgba(184,144,91,0.42)' },
-  level3: { backgroundColor: 'rgba(194,163,120,0.68)' },
+  level1: { backgroundColor: Theme.colors.accentGlow },
+  level2: { backgroundColor: Theme.colors.accentStroke },
+  level3: { backgroundColor: Theme.colors.accent },
   level4: { backgroundColor: Theme.colors.accentInteractive },
   legend: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 5 },
   legendDay: { width: 12, height: 12, borderRadius: 3 },

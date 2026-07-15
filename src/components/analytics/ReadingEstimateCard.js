@@ -6,7 +6,8 @@ import { Theme } from '../../constants/theme';
 import { formatDuration, number } from './formatters';
 
 function ReadingEstimateCard({ velocity = {} }) {
-  const estimate = velocity.muestraSuficiente ? velocity.estimaciones_restantes?.[0] : null;
+  const safeVelocity = velocity && typeof velocity === 'object' ? velocity : {};
+  const estimate = safeVelocity.muestraSuficiente ? safeVelocity.estimaciones_restantes?.[0] : null;
   return (
     <PremiumCard testID="reading-estimate" style={styles.card}>
       <View style={styles.icon}><Ionicons name="hourglass-outline" size={22} color={Theme.colors.accentBright} /></View>
@@ -16,7 +17,7 @@ function ReadingEstimateCard({ velocity = {} }) {
           <>
             <Text style={styles.title}>{estimate.titulo || 'Libro actual'}</Text>
             <Text style={styles.value}>Te quedan aproximadamente {formatDuration(estimate.segundos_estimados)}</Text>
-            <Text style={styles.detail}>Estimación basada en {number(velocity.sesiones_consideradas)} sesiones · {number(estimate.paginas_restantes)} páginas restantes</Text>
+            <Text style={styles.detail}>Estimación basada en {number(safeVelocity.sesiones_consideradas)} sesiones · {number(estimate.paginas_restantes)} páginas restantes</Text>
           </>
         ) : (
           <>

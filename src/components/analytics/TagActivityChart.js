@@ -5,7 +5,7 @@ import { Theme } from '../../constants/theme';
 import { number } from './formatters';
 
 function TagActivityChart({ data = [], attribution }) {
-  const rows = data.slice(0, 5);
+  const rows = (Array.isArray(data) ? data : []).filter(Boolean).slice(0, 5);
   const max = Math.max(1, ...rows.map((item) => number(item.paginas)));
   return (
     <PremiumCard testID="tag-activity" style={styles.card}>

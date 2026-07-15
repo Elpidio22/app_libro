@@ -7,11 +7,11 @@ import { formatDuration, formatMonth, number } from './formatters';
 
 function MonthlyActivityChart({ data = [] }) {
   const [metric, setMetric] = useState('pages');
-  const chartData = useMemo(() => data.slice(-6).map((item, index) => ({
+  const chartData = useMemo(() => (Array.isArray(data) ? data : []).slice(-6).map((item, index) => ({
     index,
-    month: item.mes,
-    pages: number(item.paginas),
-    time: number(item.duracion_segundos),
+    month: item?.mes,
+    pages: number(item?.paginas),
+    time: number(item?.duracion_segundos),
   })), [data]);
   const [selectedIndex, setSelectedIndex] = useState(() => Math.max(0, chartData.length - 1));
   const selected = chartData[Math.min(selectedIndex, Math.max(0, chartData.length - 1))];
