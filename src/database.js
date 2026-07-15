@@ -10,10 +10,11 @@ import {
   optimizarYGuardarPortada,
 } from './portadas';
 import { obtenerVariantesISBN } from './services/isbnService';
+import { bumpDatabaseRevisions } from './database/revisions';
 
 const DATABASE_NAME = 'biblioteca.db';
-const BACKUP_VERSION = 5;
-const DATABASE_VERSION = 5;
+const BACKUP_VERSION = 6;
+const DATABASE_VERSION = 6;
 const ESTADOS_VALIDOS = ['quiero leer', 'leyendo', 'terminado', 'abandonado'];
 
 let databasePromise;
@@ -43,7 +44,11 @@ function crearUUIDDeterministico(libro) {
 
 export function getDatabase() {
   if (!databasePromise) {
-    databasePromise = SQLite.openDatabaseAsync(DATABASE_NAME);
+    databasePromise = SQLite.openDatabaseAsync(DATABASE_NAME, {
+      // Workaround para expo-sqlite 16 + FTS5: el cierre automático puede
+      // intentar finalizar dos veces statements internos de FTS en Android.
+      finalizeUnusedStatementsBeforeClosing: false,
+    });
   }
   return databasePromise;
 }
@@ -233,7 +238,7 @@ export async function inicializarBaseDeDatos() {
     version = 4;
   }
 
-  if (version < DATABASE_VERSION) {
+  if (version < 5) {
     await db.execAsync(`
       DELETE FROM sesiones_lectura
       WHERE id NOT IN (
@@ -243,6 +248,39 @@ export async function inicializarBaseDeDatos() {
       );
       CREATE UNIQUE INDEX IF NOT EXISTS idx_sesiones_libro_hora_inicio
       ON sesiones_lectura(libro_uuid, hora_inicio);
+      PRAGMA user_version = 5;
+    `);
+    version = 5;
+  }
+
+  if (version < DATABASE_VERSION) {
+    for (const statement of [
+      'ALTER TABLE sesiones_lectura ADD COLUMN pagina_inicio INTEGER NULL',
+      'ALTER TABLE sesiones_lectura ADD COLUMN pagina_fin INTEGER NULL',
+      'ALTER TABLE sesiones_lectura ADD COLUMN duracion_segundos INTEGER NULL',
+      "ALTER TABLE lista_compras ADD COLUMN estado TEXT NOT NULL DEFAULT 'activo'",
+      'ALTER TABLE lista_compras ADD COLUMN fecha_resolucion TEXT NULL',
+      'ALTER TABLE lista_compras ADD COLUMN libro_uuid_adquirido TEXT NULL',
+    ]) {
+      try {
+        await db.execAsync(statement);
+      } catch (error) {
+        if (!String(error?.message).includes('duplicate column')) throw error;
+      }
+    }
+    await db.execAsync(`
+      UPDATE sesiones_lectura
+      SET duracion_segundos = CAST(ROUND((julianday(hora_fin) - julianday(hora_inicio)) * 86400) AS INTEGER)
+      WHERE hora_fin IS NOT NULL
+        AND julianday(hora_inicio) IS NOT NULL
+        AND julianday(hora_fin) IS NOT NULL
+        AND julianday(hora_fin) >= julianday(hora_inicio)
+        AND duracion_segundos IS NULL;
+      UPDATE lista_compras
+      SET estado = 'activo'
+      WHERE estado IS NULL OR estado NOT IN ('activo', 'adquirido', 'descartado');
+      CREATE INDEX IF NOT EXISTS idx_lista_compras_estado_fecha
+      ON lista_compras(estado, fecha_agregado);
       PRAGMA user_version = ${DATABASE_VERSION};
     `);
   }
@@ -291,6 +329,7 @@ export async function insertarLibro(libro) {
       datos.notas,
       datos.estado
     );
+    bumpDatabaseRevisions('books');
     return result.lastInsertRowId;
   } catch (error) {
     if (portadaLocal && portadaLocal !== portadaOriginal) eliminarPortadaLocal(portadaLocal);
@@ -368,13 +407,23 @@ export async function crearEtiqueta(nombre) {
   if (!nombreLimpio) throw new Error('El nombre de la etiqueta es obligatorio.');
   const db = await getDatabase();
   const uuid = crearUUID();
-  await db.runAsync(
+  const result = await db.runAsync(
     `INSERT INTO etiquetas (uuid, nombre) VALUES (?, ?)
      ON CONFLICT(nombre) DO NOTHING`,
     uuid,
     nombreLimpio
   );
-  return db.getFirstAsync('SELECT uuid, nombre FROM etiquetas WHERE nombre = ? COLLATE NOCASE', nombreLimpio);
+  const etiqueta = await db.getFirstAsync('SELECT uuid, nombre FROM etiquetas WHERE nombre = ? COLLATE NOCASE', nombreLimpio);
+  if (result.changes) bumpDatabaseRevisions('tags');
+  return etiqueta;
+}
+
+function calcularDuracionSegundosConfiable(horaInicio, horaFin) {
+  if (!horaInicio || !horaFin) return null;
+  const inicioMs = Date.parse(String(horaInicio));
+  const finMs = Date.parse(String(horaFin));
+  if (!Number.isFinite(inicioMs) || !Number.isFinite(finMs) || finMs < inicioMs) return null;
+  return Math.round((finMs - inicioMs) / 1000);
 }
 
 export async function asignarEtiquetaALibro(libroUuid, etiquetaUuid) {
@@ -386,6 +435,7 @@ export async function asignarEtiquetaALibro(libroUuid, etiquetaUuid) {
     String(libroUuid),
     String(etiquetaUuid)
   );
+  if (result.changes) bumpDatabaseRevisions('tags');
   return result.changes;
 }
 
@@ -396,6 +446,7 @@ export async function quitarEtiquetaDelLibro(libroUuid, etiquetaUuid) {
     String(libroUuid),
     String(etiquetaUuid)
   );
+  if (result.changes) bumpDatabaseRevisions('tags');
   return result.changes;
 }
 
@@ -463,6 +514,7 @@ export async function actualizarLibro(id, cambios) {
   if (existente.portada_url && existente.portada_url !== portadaLocal) {
     eliminarPortadaLocal(existente.portada_url);
   }
+  bumpDatabaseRevisions('books');
   return result.changes;
 }
 
@@ -488,6 +540,7 @@ export async function eliminarLibro(id) {
       console.warn('El libro se eliminó, pero no se pudo borrar su portada local.', error);
     }
   }
+  if (result.changes) bumpDatabaseRevisions('books', 'sessions', 'tags');
   return result.changes;
 }
 
@@ -526,7 +579,8 @@ function calcularRacha(fechas, hoy = fechaLocalISO()) {
 export async function obtenerSesionActiva(libroUuid) {
   const db = await getDatabase();
   return db.getFirstAsync(
-    `SELECT id, libro_uuid, fecha, hora_inicio, hora_fin, paginas_leidas
+    `SELECT id, libro_uuid, fecha, hora_inicio, hora_fin, paginas_leidas,
+            pagina_inicio, pagina_fin, duracion_segundos
      FROM sesiones_lectura
      WHERE libro_uuid = ? AND hora_fin IS NULL
      ORDER BY id DESC LIMIT 1`,
@@ -543,14 +597,16 @@ export async function iniciarSesionLectura(libroUuid, paginaInicial = 0) {
   try {
     const result = await db.runAsync(
       `INSERT INTO sesiones_lectura
-        (libro_uuid, fecha, hora_inicio, hora_fin, paginas_leidas)
-       VALUES (?, ?, ?, NULL, ?)`,
+        (libro_uuid, fecha, hora_inicio, hora_fin, paginas_leidas, pagina_inicio, pagina_fin, duracion_segundos)
+       VALUES (?, ?, ?, NULL, 0, ?, NULL, NULL)`,
       String(libroUuid),
       fechaLocalISO(ahora),
       ahora.toISOString(),
       pagina
     );
-    return db.getFirstAsync('SELECT * FROM sesiones_lectura WHERE id = ?', result.lastInsertRowId);
+    const sesion = await db.getFirstAsync('SELECT * FROM sesiones_lectura WHERE id = ?', result.lastInsertRowId);
+    bumpDatabaseRevisions('sessions');
+    return sesion;
   } catch (error) {
     if (String(error?.message).includes('UNIQUE')) {
       throw new Error('Ya existe una sesión activa para este libro.');
@@ -580,20 +636,32 @@ export async function terminarSesionLectura(libroUuid, paginaActual) {
       String(libroUuid)
     );
     if (!sesion) throw new Error('No hay una sesión activa para terminar.');
-    const paginaInicial = Number(sesion.paginas_leidas) || 0;
+    const paginaInicial = enteroNoNegativo(sesion.pagina_inicio ?? sesion.paginas_leidas);
+    if (paginaInicial === null) throw new Error('La sesión no contiene una página inicial válida.');
     if (pagina < paginaInicial) {
       throw new Error('La página actual no puede ser menor que la página donde comenzó la sesión.');
     }
     const horaFin = new Date().toISOString();
+    const inicioMs = Date.parse(sesion.hora_inicio);
+    const finMs = Date.parse(horaFin);
+    if (!Number.isFinite(inicioMs) || !Number.isFinite(finMs) || finMs < inicioMs) {
+      throw new Error('La duración de la sesión no es válida.');
+    }
+    const duracionSegundos = Math.round((finMs - inicioMs) / 1000);
     const paginasLeidas = pagina - paginaInicial;
-    await transaction.runAsync(
+    const cierre = await transaction.runAsync(
       `UPDATE sesiones_lectura
-       SET hora_fin = ?, paginas_leidas = ?
+       SET hora_fin = ?, paginas_leidas = ?, pagina_inicio = COALESCE(pagina_inicio, ?),
+           pagina_fin = ?, duracion_segundos = ?
        WHERE id = ? AND hora_fin IS NULL`,
       horaFin,
       paginasLeidas,
+      paginaInicial,
+      pagina,
+      duracionSegundos,
       sesion.id
     );
+    if (!cierre.changes) throw new Error('La sesión ya había sido finalizada.');
     const progreso = await transaction.runAsync(
       'UPDATE mis_libros SET pagina_actual = ? WHERE uuid = ?',
       pagina,
@@ -604,9 +672,13 @@ export async function terminarSesionLectura(libroUuid, paginaActual) {
       ...sesion,
       hora_fin: horaFin,
       paginas_leidas: paginasLeidas,
-      minutos: Math.max(1, Math.round((Date.parse(horaFin) - Date.parse(sesion.hora_inicio)) / 60000)),
+      pagina_inicio: paginaInicial,
+      pagina_fin: pagina,
+      duracion_segundos: duracionSegundos,
+      minutos: Math.max(1, Math.round(duracionSegundos / 60)),
     };
   });
+  bumpDatabaseRevisions('sessions', 'books');
   return resultado;
 }
 
@@ -653,8 +725,10 @@ export async function obtenerCronicas() {
 export async function getDeseos() {
   const db = await getDatabase();
   return db.getAllAsync(`
-    SELECT id, titulo, autor, prioridad, precio_estimado, fecha_agregado
+    SELECT id, uuid, titulo, autor, prioridad, precio_estimado, fecha_agregado,
+           estado, fecha_resolucion, libro_uuid_adquirido
     FROM lista_compras
+    WHERE estado = 'activo'
     ORDER BY
       CASE prioridad WHEN 'alta' THEN 1 WHEN 'media' THEN 2 ELSE 3 END,
       datetime(fecha_agregado) DESC,
@@ -687,12 +761,20 @@ export async function addDeseo({ titulo, autor = null, prioridad = 'media', prec
     prioridad,
     precio
   );
+  bumpDatabaseRevisions('wishlist');
   return result.lastInsertRowId;
 }
 
 export async function deleteDeseo(id) {
   const db = await getDatabase();
-  const result = await db.runAsync('DELETE FROM lista_compras WHERE id = ?', Number(id));
+  const result = await db.runAsync(
+    `UPDATE lista_compras
+     SET estado = 'descartado', fecha_resolucion = ?, libro_uuid_adquirido = NULL
+     WHERE id = ? AND estado = 'activo'`,
+    new Date().toISOString(),
+    Number(id)
+  );
+  if (result.changes) bumpDatabaseRevisions('wishlist');
   return result.changes;
 }
 
@@ -704,26 +786,36 @@ export async function marcarComoAdquirido(idDeseo, titulo = null, autor = null) 
   let nuevoLibroId = null;
   await db.withExclusiveTransactionAsync(async (transaction) => {
     const deseo = await transaction.getFirstAsync(
-      'SELECT titulo, autor FROM lista_compras WHERE id = ?',
+      'SELECT uuid, titulo, autor, estado FROM lista_compras WHERE id = ?',
       id
     );
-    if (!deseo) throw new Error('El libro ya no está en la lista de deseos.');
+    if (!deseo || deseo.estado !== 'activo') throw new Error('El libro ya no está activo en la lista de deseos.');
 
     const tituloFinal = String(deseo.titulo || titulo || '').trim();
     const autorFinal = String(deseo.autor || autor || '').trim() || null;
     if (!tituloFinal) throw new Error('El título es obligatorio.');
 
+    const libroUuid = crearUUID();
     const insert = await transaction.runAsync(
       `INSERT INTO mis_libros
         (uuid, isbn, titulo, autor, portada_url, paginas_totales, pagina_actual, estado, calificacion, notas)
        VALUES (?, NULL, ?, ?, NULL, NULL, 0, 'quiero leer', NULL, NULL)`,
-      crearUUID(),
+      libroUuid,
       tituloFinal,
       autorFinal
     );
-    await transaction.runAsync('DELETE FROM lista_compras WHERE id = ?', id);
+    const resolucion = await transaction.runAsync(
+      `UPDATE lista_compras
+       SET estado = 'adquirido', fecha_resolucion = ?, libro_uuid_adquirido = ?
+       WHERE id = ? AND estado = 'activo'`,
+      new Date().toISOString(),
+      libroUuid,
+      id
+    );
+    if (!resolucion.changes) throw new Error('El deseo ya había sido resuelto.');
     nuevoLibroId = insert.lastInsertRowId;
   });
+  bumpDatabaseRevisions('wishlist', 'books');
   return nuevoLibroId;
 }
 
@@ -899,20 +991,36 @@ export async function importarBackupJSON() {
           ...deseo,
           isbn: 'lista-compras',
         });
+        const estadoDeseo = ['activo', 'adquirido', 'descartado'].includes(deseo.estado)
+          ? deseo.estado
+          : 'activo';
+        const fechaResolucion = estadoDeseo === 'activo' || !deseo.fecha_resolucion
+          ? null
+          : String(deseo.fecha_resolucion);
+        const libroUuidAdquirido = estadoDeseo === 'adquirido'
+          ? normalizarUUID(deseo.libro_uuid_adquirido)
+          : null;
         await transaction.runAsync(
-          `INSERT INTO lista_compras (uuid, titulo, autor, prioridad, precio_estimado, fecha_agregado)
-           VALUES (?, ?, ?, ?, ?, ?)
+          `INSERT INTO lista_compras
+            (uuid, titulo, autor, prioridad, precio_estimado, fecha_agregado, estado, fecha_resolucion, libro_uuid_adquirido)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(uuid) DO UPDATE SET
              titulo = excluded.titulo,
              autor = excluded.autor,
              prioridad = excluded.prioridad,
-             precio_estimado = excluded.precio_estimado`,
+             precio_estimado = excluded.precio_estimado,
+             estado = excluded.estado,
+             fecha_resolucion = excluded.fecha_resolucion,
+             libro_uuid_adquirido = excluded.libro_uuid_adquirido`,
           uuid,
           titulo,
           String(deseo.autor || '').trim() || null,
           prioridad,
           precio,
-          deseo.fecha_agregado || new Date().toISOString()
+          deseo.fecha_agregado || new Date().toISOString(),
+          estadoDeseo,
+          fechaResolucion,
+          libroUuidAdquirido
         );
       }
 
@@ -958,8 +1066,23 @@ export async function importarBackupJSON() {
         const horaInicio = String(sesion?.hora_inicio || '').trim();
         const horaFin = sesion?.hora_fin ? String(sesion.hora_fin) : null;
         const paginasLeidas = enteroNoNegativo(sesion?.paginas_leidas);
+        const paginaInicio = sesion?.pagina_inicio === null || sesion?.pagina_inicio === undefined
+          ? null
+          : enteroNoNegativo(sesion.pagina_inicio);
+        const paginaFin = sesion?.pagina_fin === null || sesion?.pagina_fin === undefined
+          ? null
+          : enteroNoNegativo(sesion.pagina_fin);
+        const duracionSegundos = sesion?.duracion_segundos === null || sesion?.duracion_segundos === undefined
+          ? calcularDuracionSegundosConfiable(horaInicio, horaFin)
+          : enteroNoNegativo(sesion.duracion_segundos);
         if (!libroUuid || !fecha || !horaInicio || paginasLeidas === null) {
           throw new Error('El backup contiene una sesión de lectura inválida.');
+        }
+        if ((sesion?.pagina_inicio != null && paginaInicio === null)
+          || (sesion?.pagina_fin != null && paginaFin === null)
+          || (sesion?.duracion_segundos != null && duracionSegundos === null)
+          || (paginaInicio !== null && paginaFin !== null && paginaFin < paginaInicio)) {
+          throw new Error('El backup contiene páginas o duración de sesión inválidas.');
         }
         let existente = await transaction.getFirstAsync(
           'SELECT id FROM sesiones_lectura WHERE libro_uuid = ? AND hora_inicio = ?',
@@ -975,23 +1098,32 @@ export async function importarBackupJSON() {
         if (existente) {
           await transaction.runAsync(
             `UPDATE sesiones_lectura
-             SET fecha = ?, hora_inicio = ?, hora_fin = ?, paginas_leidas = ? WHERE id = ?`,
+             SET fecha = ?, hora_inicio = ?, hora_fin = ?, paginas_leidas = ?,
+                 pagina_inicio = ?, pagina_fin = ?, duracion_segundos = ?
+             WHERE id = ?`,
             fecha,
             horaInicio,
             horaFin,
             paginasLeidas,
+            paginaInicio,
+            paginaFin,
+            duracionSegundos,
             existente.id
           );
         } else {
           await transaction.runAsync(
             `INSERT INTO sesiones_lectura
-              (libro_uuid, fecha, hora_inicio, hora_fin, paginas_leidas)
-             VALUES (?, ?, ?, ?, ?)`,
+              (libro_uuid, fecha, hora_inicio, hora_fin, paginas_leidas,
+               pagina_inicio, pagina_fin, duracion_segundos)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
             libroUuid,
             fecha,
             horaInicio,
             horaFin,
-            paginasLeidas
+            paginasLeidas,
+            paginaInicio,
+            paginaFin,
+            duracionSegundos
           );
         }
       }
@@ -1003,6 +1135,7 @@ export async function importarBackupJSON() {
     portadasTemporales.forEach(descartarPortadaTemporal);
   }
   portadasReemplazadas.forEach(eliminarPortadaLocal);
+  bumpDatabaseRevisions('books', 'sessions', 'tags', 'wishlist');
   return {
     cancelado: false,
     importados: librosPreparados.length,

@@ -67,7 +67,7 @@ function DeseoRow({ deseo, ocupado, onAdquirir, onEliminar }) {
           style={styles.deleteButton}
           onPress={onEliminar}
           disabled={ocupado}
-          accessibilityLabel={`Eliminar ${deseo.titulo}`}
+          accessibilityLabel={`Descartar ${deseo.titulo}`}
         >
           <Ionicons name="trash-outline" size={19} color={Theme.colors.textSecondary} />
         </Pressable>
@@ -197,8 +197,10 @@ export default function DeseosScreen() {
                 .notificationAsync(Haptics.NotificationFeedbackType.Success)
                 .catch(() => {});
               if (!isMountedRef.current) return;
-              await cargarDeseos();
-              if (!isMountedRef.current) return;
+              // La transacción ya resolvió el deseo. Actualizar la lista local evita
+              // encadenar una lectura nativa mientras expo-sqlite libera el contexto
+              // exclusivo en algunos dispositivos Android.
+              setDeseos((actuales) => actuales.filter((item) => item.id !== deseo.id));
               Alert.alert('Añadido a la biblioteca', 'El libro ya figura como “quiero leer”.', [
                 { text: 'Seguir en deseos' },
                 { text: 'Abrir ficha', onPress: () => router.push(`/libro/${libroId}`) },
@@ -217,10 +219,10 @@ export default function DeseosScreen() {
   }
 
   function confirmarEliminacion(deseo) {
-    Alert.alert('Eliminar deseo', `¿Quitar “${deseo.titulo}” de la lista?`, [
+    Alert.alert('Descartar deseo', `¿Marcar “${deseo.titulo}” como descartado?`, [
       { text: 'Cancelar', style: 'cancel' },
       {
-        text: 'Eliminar',
+        text: 'Descartar',
         style: 'destructive',
         onPress: async () => {
           if (isProcessing.current) return;
@@ -231,7 +233,7 @@ export default function DeseosScreen() {
             await cargarDeseos();
           } catch (reason) {
             console.error(reason);
-            if (isMountedRef.current) Alert.alert('No se pudo eliminar', 'El libro permanece en la lista.');
+            if (isMountedRef.current) Alert.alert('No se pudo descartar', 'El libro permanece activo en la lista.');
           } finally {
             isProcessing.current = false;
             if (isMountedRef.current) setProcesandoId(null);

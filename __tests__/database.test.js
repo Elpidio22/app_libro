@@ -15,13 +15,61 @@ function loadSubject() {
 }
 
 describe('integridad de database.js', () => {
-  test('aplica migraciones hasta user_version 5 y crea sesiones, etiquetas, FTS5 e índices', async () => {
+  test('migra una base versión 5 sin inventar páginas históricas y deriva duraciones válidas', async () => {
+    jest.resetModules();
+    const sqlite = require('expo-sqlite');
+    sqlite.__reset();
+    const dbV5 = await sqlite.openDatabaseAsync('biblioteca.db');
+    await dbV5.execAsync(`
+      CREATE TABLE lista_compras (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT UNIQUE, titulo TEXT NOT NULL,
+        autor TEXT, prioridad TEXT, precio_estimado REAL, fecha_agregado TEXT
+      );
+      CREATE TABLE sesiones_lectura (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, libro_uuid TEXT NOT NULL, fecha TEXT NOT NULL,
+        hora_inicio TEXT NOT NULL, hora_fin TEXT, paginas_leidas INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO lista_compras (uuid, titulo, prioridad, fecha_agregado)
+      VALUES ('wishlist-legacy-0001', 'Deseo histórico', 'media', '2026-01-01T00:00:00.000Z');
+      INSERT INTO sesiones_lectura (libro_uuid, fecha, hora_inicio, hora_fin, paginas_leidas)
+      VALUES
+        ('book-legacy-00001', '2026-01-02', '2026-01-02T10:00:00.000Z', '2026-01-02T10:30:00.000Z', 20),
+        ('book-legacy-00002', '2026-01-03', '2026-01-03T11:00:00.000Z', '2026-01-03T10:00:00.000Z', 15);
+      PRAGMA user_version = 5;
+    `);
+    const database = require('../src/database');
+
+    await database.inicializarBaseDeDatos();
+
+    const version = await dbV5.getFirstAsync('PRAGMA user_version');
+    const sesiones = await dbV5.getAllAsync('SELECT * FROM sesiones_lectura ORDER BY id');
+    const deseo = await dbV5.getFirstAsync('SELECT * FROM lista_compras');
+    expect(version.user_version).toBe(6);
+    expect(sesiones[0]).toMatchObject({
+      paginas_leidas: 20,
+      pagina_inicio: null,
+      pagina_fin: null,
+      duracion_segundos: 1800,
+    });
+    expect(sesiones[1]).toMatchObject({
+      paginas_leidas: 15,
+      pagina_inicio: null,
+      pagina_fin: null,
+      duracion_segundos: null,
+    });
+    expect(deseo).toMatchObject({ estado: 'activo', fecha_resolucion: null, libro_uuid_adquirido: null });
+  });
+
+  test('aplica migraciones hasta user_version 6 y crea sesiones, etiquetas, FTS5 e índices', async () => {
     const { database, sqlite } = loadSubject();
 
     await database.inicializarBaseDeDatos();
 
     const state = sqlite.__getState();
-    expect(state.userVersion).toBe(5);
+    expect(sqlite.openDatabaseAsync).toHaveBeenCalledWith('biblioteca.db', {
+      finalizeUnusedStatementsBeforeClosing: false,
+    });
+    expect(state.userVersion).toBe(6);
     expect([...state.tables]).toEqual(expect.arrayContaining([
       'mis_libros',
       'lista_compras',
@@ -32,6 +80,14 @@ describe('integridad de database.js', () => {
     ]));
     expect([...state.columns.mis_libros]).toEqual(expect.arrayContaining(['fecha_fin', 'uuid']));
     expect([...state.columns.lista_compras]).toContain('uuid');
+    expect([...state.columns.lista_compras]).toEqual(expect.arrayContaining([
+      'estado', 'fecha_resolucion', 'libro_uuid_adquirido',
+    ]));
+    const db = await database.getDatabase();
+    const columnasSesion = await db.getAllAsync('PRAGMA table_info(sesiones_lectura)');
+    expect(columnasSesion.map((column) => column.name)).toEqual(expect.arrayContaining([
+      'pagina_inicio', 'pagina_fin', 'duracion_segundos',
+    ]));
     expect([...state.indexes]).toEqual(expect.arrayContaining([
       'idx_mis_libros_uuid',
       'idx_lista_compras_uuid',
@@ -42,6 +98,7 @@ describe('integridad de database.js', () => {
       'idx_sesiones_libro',
       'idx_sesion_activa_por_libro',
       'idx_sesiones_libro_hora_inicio',
+      'idx_lista_compras_estado_fecha',
     ]));
     expect([...state.triggers]).toEqual(expect.arrayContaining([
       'mis_libros_fts_insert',
@@ -66,12 +123,25 @@ describe('integridad de database.js', () => {
       const book = await database.obtenerLibroPorId(bookId);
 
       const active = await database.iniciarSesionLectura(book.uuid, 40);
-      expect(active).toMatchObject({ libro_uuid: book.uuid, hora_fin: null, paginas_leidas: 40 });
+      expect(active).toMatchObject({
+        libro_uuid: book.uuid,
+        hora_fin: null,
+        paginas_leidas: 0,
+        pagina_inicio: 40,
+        pagina_fin: null,
+        duracion_segundos: null,
+      });
       await expect(database.obtenerSesionActiva(book.uuid)).resolves.toMatchObject({ id: active.id });
 
       jest.setSystemTime(new Date('2026-07-11T14:45:00.000Z'));
       const finished = await database.terminarSesionLectura(book.uuid, 65);
-      expect(finished).toMatchObject({ paginas_leidas: 25, minutos: 45 });
+      expect(finished).toMatchObject({
+        paginas_leidas: 25,
+        pagina_inicio: 40,
+        pagina_fin: 65,
+        duracion_segundos: 2700,
+        minutos: 45,
+      });
       await expect(database.obtenerSesionActiva(book.uuid)).resolves.toBeNull();
       await expect(database.obtenerLibroPorId(bookId)).resolves.toMatchObject({ pagina_actual: 65 });
       const db = await database.getDatabase();
@@ -116,7 +186,8 @@ describe('integridad de database.js', () => {
     await expect(database.obtenerSesionActiva(book.uuid)).resolves.toMatchObject({
       id: active.id,
       hora_fin: null,
-      paginas_leidas: 10,
+      paginas_leidas: 0,
+      pagina_inicio: 10,
     });
     await expect(database.obtenerLibroPorId(bookId)).resolves.toMatchObject({ pagina_actual: 10 });
   });
@@ -208,7 +279,7 @@ describe('integridad de database.js', () => {
     });
   });
 
-  test('exporta un backup versión 4 con todas las entidades relacionadas', async () => {
+  test('exporta un backup versión 6 con todas las entidades relacionadas', async () => {
     const { database, fileSystem } = loadSubject();
     await database.inicializarBaseDeDatos();
     const bookId = await database.insertarLibro({
@@ -224,7 +295,7 @@ describe('integridad de database.js', () => {
     const backupUri = await database.exportarBackupJSON();
     const backup = JSON.parse(await new fileSystem.File(backupUri).text());
 
-    expect(backup).toMatchObject({ tipo: 'mi-biblioteca-backup', version: 5 });
+    expect(backup).toMatchObject({ tipo: 'mi-biblioteca-backup', version: 6 });
     expect(backup.libros).toEqual([expect.objectContaining({ uuid: book.uuid })]);
     expect(backup.lista_compras).toEqual([expect.objectContaining({ titulo: 'Deseo respaldado' })]);
     expect(backup.etiquetas).toEqual([expect.objectContaining({ uuid: etiqueta.uuid, nombre: 'Favoritos' })]);
@@ -232,7 +303,14 @@ describe('integridad de database.js', () => {
       expect.objectContaining({ libro_uuid: book.uuid, etiqueta_uuid: etiqueta.uuid }),
     ]);
     expect(backup.sesiones_lectura).toEqual([
-      expect.objectContaining({ libro_uuid: book.uuid, hora_fin: null, paginas_leidas: 12 }),
+      expect.objectContaining({
+        libro_uuid: book.uuid,
+        hora_fin: null,
+        paginas_leidas: 0,
+        pagina_inicio: 12,
+        pagina_fin: null,
+        duracion_segundos: null,
+      }),
     ]);
   });
 
@@ -245,7 +323,7 @@ describe('integridad de database.js', () => {
     const wishUuid = 'bbbbbbbb-1234-4234-8234-123456789abc';
     const tagUuid = 'cccccccc-1234-4234-8234-123456789abc';
     backupFile.write(JSON.stringify({
-      tipo: 'mi-biblioteca-backup', version: 5,
+      tipo: 'mi-biblioteca-backup', version: 6,
       libros: [{
         uuid: bookUuid, titulo: 'Libro completo', autor: 'Autor', paginas_totales: 200,
         pagina_actual: 30, estado: 'leyendo', fecha_agregado: '2026-07-01T00:00:00.000Z',
@@ -253,12 +331,15 @@ describe('integridad de database.js', () => {
       lista_compras: [{
         uuid: wishUuid, titulo: 'Deseo completo', prioridad: 'media',
         fecha_agregado: '2026-07-02T00:00:00.000Z',
+        estado: 'adquirido', fecha_resolucion: '2026-07-05T00:00:00.000Z',
+        libro_uuid_adquirido: bookUuid,
       }],
       etiquetas: [{ uuid: tagUuid, nombre: 'Ensayo' }],
       libro_etiquetas: [{ libro_uuid: bookUuid, etiqueta_uuid: tagUuid }],
       sesiones_lectura: [{
         libro_uuid: bookUuid, fecha: '2026-07-10', hora_inicio: '2026-07-10T10:00:00.000Z',
         hora_fin: '2026-07-10T10:30:00.000Z', paginas_leidas: 18,
+        pagina_inicio: 30, pagina_fin: 48, duracion_segundos: 1800,
       }],
     }));
     documentPicker.__setResult({ canceled: false, assets: [{ uri: backupFile.uri }] });
@@ -268,17 +349,25 @@ describe('integridad de database.js', () => {
 
     const state = sqlite.__getState();
     expect(state.misLibros).toHaveLength(1);
-    expect(state.listaCompras).toHaveLength(1);
+    expect(state.listaCompras).toEqual([
+      expect.objectContaining({
+        estado: 'adquirido', libro_uuid_adquirido: bookUuid,
+        fecha_resolucion: '2026-07-05T00:00:00.000Z',
+      }),
+    ]);
     expect(state.etiquetas).toEqual([expect.objectContaining({ uuid: tagUuid, nombre: 'Ensayo' })]);
     expect(state.libroEtiquetas).toEqual([
       expect.objectContaining({ libro_uuid: bookUuid, etiqueta_uuid: tagUuid }),
     ]);
     expect(state.sesionesLectura).toEqual([
-      expect.objectContaining({ libro_uuid: bookUuid, paginas_leidas: 18 }),
+      expect.objectContaining({
+        libro_uuid: bookUuid, paginas_leidas: 18,
+        pagina_inicio: 30, pagina_fin: 48, duracion_segundos: 1800,
+      }),
     ]);
   });
 
-  test('revierte INSERT y conserva el deseo si falla el DELETE final', async () => {
+  test('revierte INSERT y conserva el deseo si falla la resolución final', async () => {
     const { database, sqlite } = loadSubject();
     await database.inicializarBaseDeDatos();
     const wishId = await database.addDeseo({
@@ -286,13 +375,152 @@ describe('integridad de database.js', () => {
       autor: 'Autor',
       prioridad: 'alta',
     });
-    sqlite.__failNextWishlistDelete(new Error('fallo forzado al eliminar deseo'));
+    const db = await database.getDatabase();
+    await db.execAsync(`
+      CREATE TRIGGER fallo_resolucion_deseo
+      BEFORE UPDATE OF estado ON lista_compras
+      WHEN new.estado = 'adquirido'
+      BEGIN
+        SELECT RAISE(ABORT, 'fallo forzado al resolver deseo');
+      END;
+    `);
 
     await expect(database.marcarComoAdquirido(wishId)).rejects.toThrow('fallo forzado');
 
     const state = sqlite.__getState();
     expect(state.misLibros).toHaveLength(0);
     expect(state.listaCompras).toHaveLength(1);
-    expect(state.listaCompras[0]).toMatchObject({ id: wishId, titulo: 'Libro transaccional' });
+    expect(state.listaCompras[0]).toMatchObject({
+      id: wishId,
+      titulo: 'Libro transaccional',
+      estado: 'activo',
+      fecha_resolucion: null,
+      libro_uuid_adquirido: null,
+    });
+  });
+
+  test('impide duración negativa, página final invertida y doble finalización', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-07-12T14:00:00.000Z'));
+    try {
+      const { database } = loadSubject();
+      await database.inicializarBaseDeDatos();
+      const bookId = await database.insertarLibro({
+        titulo: 'Sesión protegida', paginas_totales: 100, pagina_actual: 20, estado: 'leyendo',
+      });
+      const book = await database.obtenerLibroPorId(bookId);
+      await database.iniciarSesionLectura(book.uuid, 20);
+
+      await expect(database.terminarSesionLectura(book.uuid, 19)).rejects.toThrow(/menor/i);
+      jest.setSystemTime(new Date('2026-07-12T13:59:00.000Z'));
+      await expect(database.terminarSesionLectura(book.uuid, 25)).rejects.toThrow(/duración/i);
+      await expect(database.obtenerSesionActiva(book.uuid)).resolves.toMatchObject({ pagina_inicio: 20, hora_fin: null });
+
+      jest.setSystemTime(new Date('2026-07-12T14:01:00.000Z'));
+      await expect(database.terminarSesionLectura(book.uuid, 25)).resolves.toMatchObject({
+        pagina_fin: 25, paginas_leidas: 5, duracion_segundos: 60,
+      });
+      await expect(database.terminarSesionLectura(book.uuid, 30)).rejects.toThrow(/sesión activa/i);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('restaura un backup versión 5 completando las columnas nuevas con NULL', async () => {
+    const { database, sqlite, fileSystem, documentPicker } = loadSubject();
+    await database.inicializarBaseDeDatos();
+    const backupFile = new fileSystem.File(fileSystem.Paths.cache, 'backup-v5.json');
+    backupFile.create();
+    const bookUuid = 'dddddddd-1234-4234-8234-123456789abc';
+    backupFile.write(JSON.stringify({
+      tipo: 'mi-biblioteca-backup',
+      version: 5,
+      libros: [{
+        uuid: bookUuid, titulo: 'Libro legado', estado: 'leyendo', pagina_actual: 22,
+        paginas_totales: 100, fecha_agregado: '2026-06-01T00:00:00.000Z',
+      }],
+      lista_compras: [{
+        uuid: 'eeeeeeee-1234-4234-8234-123456789abc', titulo: 'Deseo legado',
+        prioridad: 'media', fecha_agregado: '2026-06-02T00:00:00.000Z',
+      }],
+      sesiones_lectura: [{
+        libro_uuid: bookUuid, fecha: '2026-06-03',
+        hora_inicio: '2026-06-03T10:00:00.000Z', hora_fin: '2026-06-03T10:20:00.000Z',
+        paginas_leidas: 12,
+      }, {
+        libro_uuid: bookUuid, fecha: '2026-06-04',
+        hora_inicio: '2026-06-04T11:00:00.000Z', hora_fin: '2026-06-04T10:00:00.000Z',
+        paginas_leidas: 7,
+      }],
+    }));
+    documentPicker.__setResult({ canceled: false, assets: [{ uri: backupFile.uri }] });
+
+    await database.importarBackupJSON();
+
+    const state = sqlite.__getState();
+    expect(state.listaCompras[0]).toMatchObject({ estado: 'activo', fecha_resolucion: null });
+    expect(state.sesionesLectura[0]).toMatchObject({
+      paginas_leidas: 12,
+      pagina_inicio: null,
+      pagina_fin: null,
+      duracion_segundos: 1200,
+    });
+    expect(state.sesionesLectura[1]).toMatchObject({
+      paginas_leidas: 7,
+      pagina_inicio: null,
+      pagina_fin: null,
+      duracion_segundos: null,
+    });
+  });
+
+  test('adquirir conserva el deseo, lo vincula al libro y deja de mostrarlo como activo', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-07-15T12:00:00.000Z'));
+    try {
+      const { database, sqlite } = loadSubject();
+      await database.inicializarBaseDeDatos();
+      const wishId = await database.addDeseo({ titulo: 'Historia preservada', autor: 'Autor' });
+
+      const bookId = await database.marcarComoAdquirido(wishId);
+      const book = await database.obtenerLibroPorId(bookId);
+      const state = sqlite.__getState();
+
+      expect(state.listaCompras).toHaveLength(1);
+      expect(state.listaCompras[0]).toMatchObject({
+        id: wishId,
+        estado: 'adquirido',
+        libro_uuid_adquirido: book.uuid,
+        fecha_resolucion: '2026-07-15T12:00:00.000Z',
+      });
+      await expect(database.getDeseos()).resolves.toEqual([]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('descartar conserva el historial, no crea un libro y deja de mostrar el deseo como activo', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-07-15T13:00:00.000Z'));
+    try {
+      const { database, sqlite } = loadSubject();
+      await database.inicializarBaseDeDatos();
+      const wishId = await database.addDeseo({ titulo: 'Deseo descartado', autor: 'Autor' });
+
+      await expect(database.deleteDeseo(wishId)).resolves.toBe(1);
+      const state = sqlite.__getState();
+
+      expect(state.listaCompras).toHaveLength(1);
+      expect(state.listaCompras[0]).toMatchObject({
+        id: wishId,
+        estado: 'descartado',
+        libro_uuid_adquirido: null,
+        fecha_resolucion: '2026-07-15T13:00:00.000Z',
+      });
+      expect(state.misLibros).toHaveLength(0);
+      await expect(database.getDeseos()).resolves.toEqual([]);
+      await expect(database.marcarComoAdquirido(wishId)).rejects.toThrow(/ya no está activo/i);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
