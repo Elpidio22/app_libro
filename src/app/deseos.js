@@ -197,8 +197,10 @@ export default function DeseosScreen() {
                 .notificationAsync(Haptics.NotificationFeedbackType.Success)
                 .catch(() => {});
               if (!isMountedRef.current) return;
-              await cargarDeseos();
-              if (!isMountedRef.current) return;
+              // La transacción ya resolvió el deseo. Actualizar la lista local evita
+              // encadenar una lectura nativa mientras expo-sqlite libera el contexto
+              // exclusivo en algunos dispositivos Android.
+              setDeseos((actuales) => actuales.filter((item) => item.id !== deseo.id));
               Alert.alert('Añadido a la biblioteca', 'El libro ya figura como “quiero leer”.', [
                 { text: 'Seguir en deseos' },
                 { text: 'Abrir ficha', onPress: () => router.push(`/libro/${libroId}`) },
