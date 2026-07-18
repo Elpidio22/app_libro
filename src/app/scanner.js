@@ -13,6 +13,7 @@ import {
   View,
 } from 'react-native';
 import { useFocusEffect } from 'expo-router';
+import Constants from 'expo-constants';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import * as Haptics from 'expo-haptics';
@@ -41,6 +42,8 @@ const FORMULARIO_VACIO = {
   paginas_totales: '',
   portada_url: null,
 };
+
+const IS_PREVIEW = Constants.expoConfig?.extra?.appVariant === 'preview';
 
 function camposPersistibles(resultado) {
   return {
@@ -503,6 +506,22 @@ export default function AltaLibroScreen() {
     );
   }
 
+  if (IS_PREVIEW) {
+    return (
+      <KeyboardAvoidingView
+        style={styles.screen}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={0}
+      >
+        <View style={styles.previewNotice}>
+          <Ionicons name="construct-outline" size={21} color={Theme.colors.warning} />
+          <Text style={styles.previewNoticeText}>El escáner está temporalmente en mantenimiento.</Text>
+        </View>
+        <View style={styles.body}>{FormularioLibro({ permitePortadaLocal: true })}</View>
+      </KeyboardAvoidingView>
+    );
+  }
+
   return (
     <KeyboardAvoidingView
       style={styles.screen}
@@ -583,4 +602,6 @@ const styles = StyleSheet.create({
   coverAction: { flex: 1, marginTop: Theme.spacing.sm },
   secondaryText: { color: Theme.colors.textSecondary, fontFamily: Theme.typography.families.interfaceMedium, ...Theme.typography.label },
   disabled: { opacity: 0.55 },
+  previewNotice: { flexDirection: 'row', alignItems: 'center', gap: Theme.spacing.sm, padding: Theme.spacing.lg, margin: Theme.spacing.md, marginBottom: 0, backgroundColor: Theme.colors.surfaceElevated, borderWidth: 1, borderColor: Theme.colors.strokeStrong, borderRadius: Theme.radii.md },
+  previewNoticeText: { flex: 1, color: Theme.colors.textSecondary, fontFamily: Theme.typography.families.interface, ...Theme.typography.body },
 });
