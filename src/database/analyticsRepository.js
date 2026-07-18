@@ -14,6 +14,112 @@ const VALID_SESSION_SQL = `${VALID_ACTIVITY_SQL}
   AND duracion_segundos BETWEEN 1 AND ${MAX_SESSION_SECONDS}
 `;
 
+function duracionRealSegundos(sesion) {
+  const guardada = Number(sesion?.duracion_segundos);
+  if (sesion?.duracion_segundos !== null && sesion?.duracion_segundos !== undefined) {
+    return Number.isFinite(guardada) ? guardada : null;
+  }
+  const inicio = Date.parse(sesion?.hora_inicio);
+  const fin = Date.parse(sesion?.hora_fin);
+  if (!Number.isFinite(inicio) || !Number.isFinite(fin) || fin <= inicio) return null;
+  return Math.round((fin - inicio) / 1000);
+}
+
+export function esSesionValidaParaResumen(sesion) {
+  const paginas = Number(sesion?.paginas_leidas);
+  const paginaInicio = sesion?.pagina_inicio == null ? null : Number(sesion.pagina_inicio);
+  const paginaFin = sesion?.pagina_fin == null ? null : Number(sesion.pagina_fin);
+  const duracion = duracionRealSegundos(sesion);
+  return Boolean(
+    sesion?.hora_fin
+    && /^\d{4}-\d{2}-\d{2}$/.test(String(sesion?.fecha || ''))
+    && Number.isFinite(paginas)
+    && paginas >= 0
+    && (paginaInicio === null || paginaFin === null || paginaFin >= paginaInicio)
+    && duracion !== null
+    && duracion >= 1
+    && duracion <= MAX_SESSION_SECONDS
+  );
+}
+
+export function calcularDiasCalendario(primeraFecha, ultimaFecha) {
+  if (!primeraFecha || !ultimaFecha) return null;
+  const inicio = Date.parse(`${primeraFecha}T12:00:00Z`);
+  const fin = Date.parse(`${ultimaFecha}T12:00:00Z`);
+  if (!Number.isFinite(inicio) || !Number.isFinite(fin) || fin < inicio) return null;
+  return Math.round((fin - inicio) / 86400000) + 1;
+}
+
+export function calcularRachaMaxima(fechas = []) {
+  const dias = [...new Set(fechas.filter((fecha) => /^\d{4}-\d{2}-\d{2}$/.test(String(fecha))))].sort();
+  let maxima = 0;
+  let actual = 0;
+  let anterior = null;
+  for (const fecha of dias) {
+    const timestamp = Date.parse(`${fecha}T12:00:00Z`);
+    actual = anterior !== null && timestamp - anterior === 86400000 ? actual + 1 : 1;
+    maxima = Math.max(maxima, actual);
+    anterior = timestamp;
+  }
+  return maxima;
+}
+
+export function construirResumenesLectura(libros, sesiones, etiquetas) {
+  const sesionesPorLibro = new Map();
+  const totalSesionesPorLibro = new Map();
+  for (const sesion of sesiones) {
+    totalSesionesPorLibro.set(sesion.libro_uuid, (totalSesionesPorLibro.get(sesion.libro_uuid) || 0) + 1);
+    if (!esSesionValidaParaResumen(sesion)) continue;
+    const acumuladas = sesionesPorLibro.get(sesion.libro_uuid) || [];
+    acumuladas.push({ ...sesion, duracion_calculada: duracionRealSegundos(sesion) });
+    sesionesPorLibro.set(sesion.libro_uuid, acumuladas);
+  }
+
+  const etiquetasPorLibro = new Map();
+  for (const etiqueta of etiquetas) {
+    const acumuladas = etiquetasPorLibro.get(etiqueta.libro_uuid) || [];
+    acumuladas.push({ uuid: etiqueta.uuid, nombre: etiqueta.nombre });
+    etiquetasPorLibro.set(etiqueta.libro_uuid, acumuladas);
+  }
+
+  return libros.map((libro) => {
+    const validas = sesionesPorLibro.get(libro.uuid) || [];
+    const fechas = validas.map((sesion) => sesion.fecha).sort();
+    const diasActivos = new Set(fechas).size;
+    const primeraSesion = fechas[0] || null;
+    const ultimaSesion = fechas[fechas.length - 1] || null;
+    const diasCalendario = calcularDiasCalendario(primeraSesion, ultimaSesion);
+    const paginasRegistradas = validas.reduce((total, sesion) => total + numero(sesion.paginas_leidas), 0);
+    const duracionSegundos = validas.reduce((total, sesion) => total + numero(sesion.duracion_calculada), 0);
+    const paginasTotales = libro.paginas_totales == null ? null : numero(libro.paginas_totales);
+    const cobertura = paginasTotales > 0 ? Math.min(1, paginasRegistradas / paginasTotales) : null;
+    const totalSesiones = totalSesionesPorLibro.get(libro.uuid) || 0;
+
+    return {
+      ...libro,
+      etiquetas: etiquetasPorLibro.get(libro.uuid) || [],
+      actividad: validas.length ? {
+        sesiones: validas.length,
+        sesiones_excluidas: Math.max(0, totalSesiones - validas.length),
+        primera_sesion: primeraSesion,
+        ultima_sesion: ultimaSesion,
+        dias_calendario: diasCalendario,
+        dias_activos: diasActivos,
+        racha_maxima: calcularRachaMaxima(fechas),
+        regularidad: diasCalendario ? diasActivos / diasCalendario : null,
+        paginas_registradas: paginasRegistradas,
+        duracion_segundos: duracionSegundos,
+        paginas_promedio_sesion: paginasRegistradas / validas.length,
+        minutos_promedio_sesion: (duracionSegundos / 60) / validas.length,
+        velocidad_paginas_hora: duracionSegundos > 0 ? (paginasRegistradas * 3600) / duracionSegundos : null,
+        cobertura_sesiones: cobertura,
+        cobertura_parcial: cobertura !== null && cobertura < 1,
+      } : null,
+      sesiones_registradas_total: totalSesiones,
+    };
+  });
+}
+
 function sqlConAlias(sql, alias) {
   return sql.replace(/\b(hora_fin|duracion_segundos|paginas_leidas|pagina_inicio|pagina_fin)\b/g, `${alias}.$1`);
 }
@@ -100,6 +206,9 @@ async function consultarDashboard(db, rango) {
     diaSemanaRaw,
     estadoLibros,
     librosLeyendo,
+    librosParaResumen,
+    sesionesParaResumen,
+    etiquetasParaResumen,
   ] = await Promise.all([
     db.getFirstAsync(`
       SELECT COALESCE(SUM(paginas_leidas), 0) AS paginas,
@@ -195,6 +304,26 @@ async function consultarDashboard(db, rango) {
       SELECT uuid, id, titulo, pagina_actual, paginas_totales
       FROM mis_libros
       WHERE estado = 'leyendo' AND paginas_totales IS NOT NULL AND paginas_totales > pagina_actual`),
+    db.getAllAsync(`
+      SELECT id, uuid, isbn, titulo, autor, portada_url, paginas_totales,
+             pagina_actual, estado, calificacion, notas, fecha_fin
+      FROM mis_libros
+      WHERE estado = 'terminado'
+      ORDER BY fecha_fin IS NULL ASC, fecha_fin DESC, titulo COLLATE NOCASE`),
+    db.getAllAsync(`
+      SELECT s.id, s.libro_uuid, s.fecha, s.hora_inicio, s.hora_fin,
+             s.paginas_leidas, s.pagina_inicio, s.pagina_fin, s.duracion_segundos
+      FROM sesiones_lectura s
+      JOIN mis_libros l ON l.uuid = s.libro_uuid
+      WHERE l.estado = 'terminado'
+      ORDER BY s.libro_uuid, s.fecha, s.hora_inicio`),
+    db.getAllAsync(`
+      SELECT le.libro_uuid, e.uuid, e.nombre
+      FROM libro_etiquetas le
+      JOIN etiquetas e ON e.uuid = le.etiqueta_uuid
+      JOIN mis_libros l ON l.uuid = le.libro_uuid
+      WHERE l.estado = 'terminado'
+      ORDER BY le.libro_uuid, e.nombre COLLATE NOCASE`),
   ]);
 
   const paginas = numero(resumenSesiones?.paginas);
@@ -259,6 +388,11 @@ async function consultarDashboard(db, rango) {
         ? null
         : Math.round(numero(wishlistRaw.segundos_hasta_adquirir)),
     },
+    resumenesLectura: construirResumenesLectura(
+      librosParaResumen,
+      sesionesParaResumen,
+      etiquetasParaResumen
+    ),
   };
 }
 

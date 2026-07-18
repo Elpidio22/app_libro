@@ -13,6 +13,7 @@ import TagActivityChart from '../components/analytics/TagActivityChart';
 import ReadingEstimateCard from '../components/analytics/ReadingEstimateCard';
 import WishlistConversionCard from '../components/analytics/WishlistConversionCard';
 import MonthlyNarrative from '../components/analytics/MonthlyNarrative';
+import ReadingSummaries from '../components/analytics/ReadingSummaries';
 import {
   formatComparison,
   formatDuration,
@@ -20,7 +21,7 @@ import {
   revisionsKey,
 } from '../components/analytics/formatters';
 
-const SECTIONS = ['monthly', 'heatmap', 'tags', 'estimate', 'wishlist', 'narrative'];
+const SECTIONS = ['summaries', 'monthly', 'heatmap', 'tags', 'estimate', 'wishlist', 'narrative'];
 let dashboardScreenCache = null;
 
 export function __resetCronicasCacheForTests() {
@@ -170,6 +171,7 @@ export default function CronicasScreen() {
   }, [loadDashboard]));
 
   const renderSection = useCallback(({ item }) => {
+    if (item === 'summaries') return <ReadingSummaries data={data?.resumenesLectura} />;
     if (item === 'monthly') return <MonthlyActivityChart data={data?.tendenciaMensual} />;
     if (item === 'heatmap') return <ActivityHeatmap data={data?.actividadDiaria} />;
     if (item === 'tags') return <TagActivityChart data={data?.etiquetas} attribution={data?._meta?.etiquetas_atribucion} />;

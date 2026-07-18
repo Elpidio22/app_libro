@@ -475,7 +475,6 @@ export async function actualizarLibro(id, cambios) {
       pagina_actual = ?, estado = ?, calificacion = ?, notas = ?,
       fecha_fin = CASE
         WHEN ? = 'terminado' AND estado <> 'terminado' THEN CURRENT_DATE
-        WHEN ? <> 'terminado' THEN NULL
         ELSE fecha_fin
       END
      WHERE id = ?`,
@@ -489,7 +488,6 @@ export async function actualizarLibro(id, cambios) {
     datos.estado,
     datos.calificacion,
     datos.notas,
-    datos.estado,
     datos.estado,
     Number(id)
     );

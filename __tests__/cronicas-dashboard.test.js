@@ -3,6 +3,7 @@ import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 
 jest.mock('expo-router', () => ({
   useFocusEffect: (callback) => require('react').useEffect(callback, [callback]),
+  useRouter: () => ({ push: jest.fn() }),
 }));
 
 jest.mock('@expo/vector-icons', () => {
@@ -34,6 +35,7 @@ const { default: ActivityHeatmap } = require('../src/components/analytics/Activi
 const { default: ReadingEstimateCard } = require('../src/components/analytics/ReadingEstimateCard');
 const { default: WishlistConversionCard } = require('../src/components/analytics/WishlistConversionCard');
 const { default: MonthlyNarrative } = require('../src/components/analytics/MonthlyNarrative');
+const { default: ReadingSummaries } = require('../src/components/analytics/ReadingSummaries');
 const { buildMonthlyNarrative } = require('../src/components/analytics/formatters');
 
 function dashboard(overrides = {}) {
@@ -74,6 +76,7 @@ function dashboard(overrides = {}) {
       tasa_adquisicion: 2 / 3,
       segundos_promedio_hasta_adquirir: 172800,
     },
+    resumenesLectura: [],
     _meta: {
       generation: 1,
       revisions: { sessionsRevision: 0, booksRevision: 0, tagsRevision: 0, wishlistRevision: 0 },
@@ -164,6 +167,32 @@ describe('Dashboard de Crónicas', () => {
 
     await waitFor(() => expect(screen.getByText('Tu historia empieza con una sesión')).toBeTruthy());
     expect(screen.getByText('Todavía no hay actividad mensual para representar.')).toBeTruthy();
+    expect(screen.getByText('Cuando termines un libro, acá aparecerá la historia de esa lectura.')).toBeTruthy();
+  });
+
+  test('abre el detalle de un resumen terminado con actividad registrada', async () => {
+    const screen = await render(
+      <ReadingSummaries data={[{
+        id: 7, uuid: 'summary-book-0001', isbn: '9789870000001', titulo: 'Lectura resumida',
+        autor: 'Autora', portada_url: null, paginas_totales: 200, pagina_actual: 200,
+        estado: 'terminado', calificacion: 5, notas: 'Nota final', fecha_fin: '2026-07-15',
+        etiquetas: [{ uuid: 'tag-summary-01', nombre: 'Ensayo' }],
+        actividad: {
+          sesiones: 2, sesiones_excluidas: 0, primera_sesion: '2026-07-10',
+          ultima_sesion: '2026-07-12', dias_calendario: 3, dias_activos: 2,
+          racha_maxima: 1, regularidad: 2 / 3, paginas_registradas: 80,
+          duracion_segundos: 7200, paginas_promedio_sesion: 40,
+          minutos_promedio_sesion: 60, velocidad_paginas_hora: 40,
+          cobertura_sesiones: 0.4, cobertura_parcial: true,
+        },
+      }]} />
+    );
+
+    await act(async () => fireEvent.press(screen.getByTestId('reading-summary-summary-book-0001')));
+    await waitFor(() => expect(screen.getByText('Resumen de lectura')).toBeTruthy());
+    expect(screen.getByText('Actividad registrada')).toBeTruthy();
+    expect(screen.getByText(/Cobertura aproximada por sesiones: 40%/)).toBeTruthy();
+    expect(screen.getByText('Nota final')).toBeTruthy();
   });
 
   test('explica una muestra insuficiente sin inventar estimaciones', async () => {
