@@ -280,7 +280,7 @@ describe('integridad de database.js', () => {
   });
 
   test('exporta un backup versión 6 con todas las entidades relacionadas', async () => {
-    const { database, fileSystem } = loadSubject();
+    const { database } = loadSubject();
     await database.inicializarBaseDeDatos();
     const bookId = await database.insertarLibro({
       titulo: 'Libro respaldado', autor: 'Autora', paginas_totales: 180,
@@ -292,8 +292,8 @@ describe('integridad de database.js', () => {
     await database.asignarEtiquetaALibro(book.uuid, etiqueta.uuid);
     await database.iniciarSesionLectura(book.uuid, 12);
 
-    const backupUri = await database.exportarBackupJSON();
-    const backup = JSON.parse(await new fileSystem.File(backupUri).text());
+    const documento = await database.crearDocumentoBackupJSON();
+    const backup = JSON.parse(documento.contenido);
 
     expect(backup).toMatchObject({ tipo: 'mi-biblioteca-backup', version: 6 });
     expect(backup.libros).toEqual([expect.objectContaining({ uuid: book.uuid })]);
@@ -312,6 +312,53 @@ describe('integridad de database.js', () => {
         duracion_segundos: null,
       }),
     ]);
+  });
+
+  test('cancelar Document Picker no intenta importar', async () => {
+    const { database } = loadSubject();
+    await database.inicializarBaseDeDatos();
+    await expect(database.seleccionarBackupParaImportar()).resolves.toEqual({ cancelado: true });
+  });
+
+  test('rechaza un archivo sin extensión JSON antes de leerlo', async () => {
+    const { database, documentPicker } = loadSubject();
+    await database.inicializarBaseDeDatos();
+    documentPicker.__setResult({
+      canceled: false,
+      assets: [{ uri: 'content://downloads/respaldo.txt', name: 'respaldo.txt', mimeType: 'text/plain' }],
+    });
+    await expect(database.seleccionarBackupParaImportar()).rejects.toThrow(/\.json/i);
+  });
+
+  test('rechaza contenido JSON mal formado y refresca revisiones tras una importación válida', async () => {
+    const { database, fileSystem, documentPicker } = loadSubject();
+    const revisions = require('../src/database/revisions');
+    await database.inicializarBaseDeDatos();
+    const backupFile = new fileSystem.File(fileSystem.Paths.cache, 'respaldo.json');
+    backupFile.create();
+    backupFile.write('{mal formado');
+    documentPicker.__setResult({
+      canceled: false,
+      assets: [{ uri: backupFile.uri, name: 'respaldo.json', mimeType: 'application/json' }],
+    });
+    await expect(database.seleccionarBackupParaImportar()).rejects.toThrow(/JSON válido/i);
+
+    const before = revisions.getDatabaseRevisions();
+    const result = await database.ejecutarImportacionBackup({
+      tipo: 'mi-biblioteca-backup',
+      version: 6,
+      libros: [],
+      lista_compras: [],
+      etiquetas: [],
+      libro_etiquetas: [],
+      sesiones_lectura: [],
+    });
+    const after = revisions.getDatabaseRevisions();
+    expect(result.modo).toBe('fusionar');
+    expect(after.booksRevision).toBe(before.booksRevision + 1);
+    expect(after.sessionsRevision).toBe(before.sessionsRevision + 1);
+    expect(after.tagsRevision).toBe(before.tagsRevision + 1);
+    expect(after.wishlistRevision).toBe(before.wishlistRevision + 1);
   });
 
   test('restaura todas las entidades sin duplicarlas al repetir la importación', async () => {

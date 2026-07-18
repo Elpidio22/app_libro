@@ -1,6 +1,5 @@
 import * as SQLite from 'expo-sqlite';
-import { File, Paths } from 'expo-file-system';
-import * as Sharing from 'expo-sharing';
+import { File } from 'expo-file-system';
 import * as DocumentPicker from 'expo-document-picker';
 import {
   confirmarPortadaTemporal,
@@ -15,6 +14,13 @@ import {
   importPreparedBackup,
   validateBackupDocument,
 } from './services/backupImportService';
+import {
+  compartirDocumentoBackup,
+  crearNombreArchivoBackup,
+  guardarDocumentoBackup,
+  serializarBackup,
+  validarArchivoJSONSeleccionado,
+} from './services/backupFileService';
 
 const DATABASE_NAME = 'biblioteca.db';
 const BACKUP_VERSION = 6;
@@ -815,7 +821,7 @@ async function serializarLibroParaBackup(libro) {
   return { ...libro, portada_base64: portadaBase64 };
 }
 
-export async function exportarBackupJSON() {
+export async function crearDocumentoBackupJSON(fecha = new Date()) {
   const db = await getDatabase();
   let snapshot;
   await db.withExclusiveTransactionAsync(async (transaction) => {
@@ -834,7 +840,7 @@ export async function exportarBackupJSON() {
   const backup = {
     tipo: 'mi-biblioteca-backup',
     version: BACKUP_VERSION,
-    fecha_exportacion: new Date().toISOString(),
+    fecha_exportacion: fecha.toISOString(),
     libros: librosConPortada,
     lista_compras: snapshot.lista_compras,
     etiquetas: snapshot.etiquetas,
@@ -842,21 +848,25 @@ export async function exportarBackupJSON() {
     sesiones_lectura: snapshot.sesiones_lectura,
   };
 
-  const nombre = `mi-biblioteca-${new Date().toISOString().slice(0, 10)}.json`;
-  const archivo = new File(Paths.cache, nombre);
-  if (archivo.exists) archivo.delete();
-  archivo.create();
-  archivo.write(JSON.stringify(backup, null, 2));
+  return {
+    backup,
+    contenido: serializarBackup(backup),
+    nombre: crearNombreArchivoBackup(fecha),
+  };
+}
 
-  if (!(await Sharing.isAvailableAsync())) {
-    throw new Error(`El menú para compartir no está disponible. Backup creado en: ${archivo.uri}`);
-  }
-  await Sharing.shareAsync(archivo.uri, {
-    mimeType: 'application/json',
-    dialogTitle: 'Exportar backup de Mi Biblioteca',
-    UTI: 'public.json',
-  });
-  return archivo.uri;
+export async function guardarBackupJSON() {
+  return guardarDocumentoBackup(await crearDocumentoBackupJSON());
+}
+
+export async function compartirBackupJSON() {
+  return compartirDocumentoBackup(await crearDocumentoBackupJSON());
+}
+
+// Alias conservado para llamadas anteriores. Guardar físicamente es una
+// acción independiente de compartir una copia temporal.
+export async function exportarBackupJSON() {
+  return compartirBackupJSON();
 }
 
 
@@ -868,7 +878,8 @@ export async function seleccionarBackupParaImportar() {
   });
   if (seleccion.canceled) return { cancelado: true };
 
-  const archivo = new File(seleccion.assets[0]);
+  const asset = validarArchivoJSONSeleccionado(seleccion.assets?.[0]);
+  const archivo = new File(asset);
   const contenido = await archivo.text();
   let documento;
   try {

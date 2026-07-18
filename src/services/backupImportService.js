@@ -135,6 +135,7 @@ export function validateBackupDocument(input) {
       etiquetas: backup.etiquetas.length,
       libro_etiquetas: backup.libro_etiquetas.length,
       sesiones_lectura: backup.sesiones_lectura.length,
+      portadas: backup.libros.filter((libro) => Boolean(libro?.portada_base64 || libro?.portada_url)).length,
     },
   };
 }

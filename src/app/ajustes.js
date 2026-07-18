@@ -2,13 +2,13 @@ import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
+  compartirBackupJSON,
   ejecutarImportacionBackup,
-  exportarBackupJSON,
+  guardarBackupJSON,
   seleccionarBackupParaImportar,
 } from '../database';
 import { Theme } from '../constants/theme';
 import { PremiumButton, PremiumCard } from '../components/PremiumUI';
-import { IMPORT_MODES } from '../services/backupImportService';
 
 export default function AjustesScreen() {
   const isMountedRef = useRef(true);
@@ -19,24 +19,45 @@ export default function AjustesScreen() {
     isMountedRef.current = false;
   }, []);
 
-  async function exportarBackup() {
+  async function guardarBackup() {
     if (isProcessingRef.current) return;
     isProcessingRef.current = true;
-    setAccion('exportar');
+    setAccion('guardar');
     try {
-      await exportarBackupJSON();
+      const resultado = await guardarBackupJSON();
+      if (resultado.cancelado) return;
       if (isMountedRef.current) {
         Alert.alert(
-          'Respaldo preparado',
-          'El archivo JSON fue generado. Selecciona dónde guardarlo o con qué aplicación compartirlo.'
+          'Respaldo guardado',
+          `Se guardó ${resultado.nombre} en la carpeta elegida.`
         );
       }
     } catch (error) {
       console.error(error);
       if (isMountedRef.current) {
         Alert.alert(
-          'No se pudo exportar el respaldo',
-          error.message || 'No fue posible crear o compartir el archivo de respaldo.'
+          'No se pudo guardar el respaldo',
+          error.message || 'No fue posible escribir el archivo en la carpeta elegida.'
+        );
+      }
+    } finally {
+      isProcessingRef.current = false;
+      if (isMountedRef.current) setAccion(null);
+    }
+  }
+
+  async function compartirBackup() {
+    if (isProcessingRef.current) return;
+    isProcessingRef.current = true;
+    setAccion('compartir');
+    try {
+      await compartirBackupJSON();
+    } catch (error) {
+      console.error(error);
+      if (isMountedRef.current) {
+        Alert.alert(
+          'No se pudo compartir el respaldo',
+          error.message || 'No fue posible abrir el menú para compartir.'
         );
       }
     } finally {
@@ -69,10 +90,10 @@ export default function AjustesScreen() {
     return lineas.join('\n');
   }
 
-  async function ejecutarImportacion(backup, modo, confirmadoReemplazo = false) {
+  async function ejecutarImportacion(backup) {
     setAccion('importar');
     try {
-      const resultado = await ejecutarImportacionBackup(backup, { modo, confirmadoReemplazo });
+      const resultado = await ejecutarImportacionBackup(backup);
       if (!isMountedRef.current) return;
       Alert.alert(
         'Respaldo importado',
@@ -91,22 +112,6 @@ export default function AjustesScreen() {
     }
   }
 
-  function confirmarReemplazo(backup) {
-    Alert.alert(
-      'Reemplazar todos los datos',
-      'Se borrarán los libros, deseos, etiquetas y sesiones actuales antes de restaurar este respaldo. Esta acción no se puede deshacer.',
-      [
-        { text: 'Cancelar', style: 'cancel', onPress: liberarImportacion },
-        {
-          text: 'BORRAR Y RESTAURAR',
-          style: 'destructive',
-          onPress: () => ejecutarImportacion(backup, IMPORT_MODES.REPLACE, true),
-        },
-      ],
-      { cancelable: false }
-    );
-  }
-
   function mostrarResumen(seleccion) {
     const resumen = seleccion.resumen;
     const fecha = resumen.fecha_exportacion
@@ -116,11 +121,11 @@ export default function AjustesScreen() {
       `Respaldo versión ${resumen.version}`,
       `Fecha: ${fecha}\nLibros: ${resumen.libros}\nDeseos: ${resumen.lista_compras}`
       + `\nEtiquetas: ${resumen.etiquetas}\nRelaciones: ${resumen.libro_etiquetas}`
-      + `\nSesiones: ${resumen.sesiones_lectura}\n\n¿Cómo quieres restaurarlo?`,
+      + `\nSesiones: ${resumen.sesiones_lectura}\nPortadas: ${resumen.portadas}`
+      + '\n\nEste respaldo se combinará con los datos actuales. Los registros locales que no aparezcan en el respaldo no se eliminarán.',
       [
         { text: 'Cancelar', style: 'cancel', onPress: liberarImportacion },
-        { text: 'Fusionar', onPress: () => ejecutarImportacion(seleccion.backup, IMPORT_MODES.MERGE) },
-        { text: 'Reemplazar', style: 'destructive', onPress: () => confirmarReemplazo(seleccion.backup) },
+        { text: 'Combinar', onPress: () => ejecutarImportacion(seleccion.backup) },
       ],
       { cancelable: false }
     );
@@ -165,24 +170,50 @@ export default function AjustesScreen() {
 
       <PremiumCard style={styles.card}>
         <View style={styles.cardHeading}>
-          <Ionicons name="cloud-upload-outline" size={24} color={Theme.colors.accentBright} />
+          <Ionicons name="save-outline" size={24} color={Theme.colors.accentBright} />
           <View style={styles.cardCopy}>
-            <Text style={styles.cardTitle}>Exportar respaldo</Text>
-            <Text style={styles.cardText}>Genera un archivo JSON y compártelo mediante el menú seguro del dispositivo.</Text>
+            <Text style={styles.cardTitle}>Guardar respaldo</Text>
+            <Text style={styles.cardText}>Elige una carpeta real del teléfono o un proveedor compatible para conservar el JSON.</Text>
           </View>
         </View>
         <PremiumButton
           style={styles.actionButton}
-          onPress={exportarBackup}
+          onPress={guardarBackup}
           disabled={Boolean(accion)}
-          accessibilityLabel="Exportar respaldo de la biblioteca"
+          accessibilityLabel="Guardar respaldo de la biblioteca"
         >
-          {accion === 'exportar' ? (
+          {accion === 'guardar' ? (
+            <ActivityIndicator color={Theme.colors.textPrimary} />
+          ) : (
+            <>
+              <Ionicons name="folder-outline" size={19} color={Theme.colors.textPrimary} />
+              <Text style={styles.buttonText}>ELEGIR CARPETA Y GUARDAR</Text>
+            </>
+          )}
+        </PremiumButton>
+      </PremiumCard>
+
+      <PremiumCard style={styles.card}>
+        <View style={styles.cardHeading}>
+          <Ionicons name="share-social-outline" size={24} color={Theme.colors.accentInteractive} />
+          <View style={styles.cardCopy}>
+            <Text style={styles.cardTitle}>Compartir respaldo</Text>
+            <Text style={styles.cardText}>Envía una copia temporal a WhatsApp, correo u otra aplicación.</Text>
+            <Text style={styles.helperText}>Compartir no guarda automáticamente una copia en Descargas.</Text>
+          </View>
+        </View>
+        <PremiumButton
+          style={styles.actionButton}
+          onPress={compartirBackup}
+          disabled={Boolean(accion)}
+          accessibilityLabel="Compartir respaldo de la biblioteca"
+        >
+          {accion === 'compartir' ? (
             <ActivityIndicator color={Theme.colors.textPrimary} />
           ) : (
             <>
               <Ionicons name="share-outline" size={19} color={Theme.colors.textPrimary} />
-              <Text style={styles.buttonText}>EXPORTAR Y COMPARTIR</Text>
+              <Text style={styles.buttonText}>COMPARTIR RESPALDO</Text>
             </>
           )}
         </PremiumButton>
@@ -216,7 +247,7 @@ export default function AjustesScreen() {
       <View style={styles.notice}>
         <Ionicons name="information-circle-outline" size={20} color={Theme.colors.textTertiary} />
         <Text style={styles.noticeText}>
-          Guarda el respaldo en una ubicación privada. Puede contener portadas y notas personales de lectura.
+          El respaldo puede incluir notas, progreso y portadas. Guárdalo en un lugar seguro.
         </Text>
       </View>
     </ScrollView>
@@ -236,6 +267,7 @@ const styles = StyleSheet.create({
   cardCopy: { flex: 1 },
   cardTitle: { color: Theme.colors.textPrimary, fontFamily: Theme.typography.families.interfaceSemiBold, ...Theme.typography.cardTitle },
   cardText: { marginTop: Theme.spacing.xs, color: Theme.colors.textSecondary, fontFamily: Theme.typography.families.interface, ...Theme.typography.body },
+  helperText: { marginTop: Theme.spacing.sm, color: Theme.colors.warning, fontFamily: Theme.typography.families.interface, ...Theme.typography.secondary },
   actionButton: { width: '100%', marginTop: Theme.spacing.xl },
   buttonText: { color: Theme.colors.textPrimary, fontFamily: Theme.typography.families.interfaceSemiBold, ...Theme.typography.button },
   notice: { flexDirection: 'row', alignItems: 'flex-start', gap: Theme.spacing.sm, padding: Theme.spacing.lg, backgroundColor: Theme.colors.surface, borderWidth: 1, borderColor: Theme.colors.stroke, borderRadius: Theme.radii.md },

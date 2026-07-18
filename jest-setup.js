@@ -1,5 +1,6 @@
 jest.mock('expo-sqlite', () => require('./test/mocks/expo-sqlite'));
 jest.mock('expo-file-system', () => require('./test/mocks/expo-file-system'));
+jest.mock('expo-file-system/legacy', () => require('./test/mocks/expo-file-system-legacy'));
 
 jest.mock('expo-document-picker', () => {
   let result = { canceled: true, assets: [] };
@@ -10,10 +11,25 @@ jest.mock('expo-document-picker', () => {
   };
 });
 
-jest.mock('expo-sharing', () => ({
-  isAvailableAsync: jest.fn(async () => true),
-  shareAsync: jest.fn(async () => undefined),
-}));
+jest.mock('expo-sharing', () => {
+  let available = true;
+  let shareFailure = null;
+  return {
+    isAvailableAsync: jest.fn(async () => available),
+    shareAsync: jest.fn(async () => {
+      if (shareFailure) throw shareFailure;
+      return undefined;
+    }),
+    __setAvailable: (value) => { available = value; },
+    __setShareFailure: (error) => { shareFailure = error; },
+    __reset: function reset() {
+      available = true;
+      shareFailure = null;
+      this.isAvailableAsync.mockClear();
+      this.shareAsync.mockClear();
+    },
+  };
+});
 
 jest.mock('expo-clipboard', () => ({
   hasImageAsync: jest.fn(async () => false),
