@@ -14,7 +14,309 @@ function loadSubject() {
   };
 }
 
+async function snapshotEsquema(db) {
+  return db.getAllAsync(`
+    SELECT type, name, tbl_name, sql
+    FROM sqlite_master
+    WHERE name NOT LIKE 'sqlite_%'
+    ORDER BY type, name
+  `);
+}
+
+async function tablaExiste(db, nombre) {
+  return Boolean(await db.getFirstAsync(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+    nombre
+  ));
+}
+
+async function snapshotSemantico(db) {
+  const tablas = await snapshotEsquema(db);
+  const conteos = {};
+  const filas = {};
+  for (const tabla of ['mis_libros', 'lista_compras', 'etiquetas', 'libro_etiquetas', 'sesiones_lectura']) {
+    if (await tablaExiste(db, tabla)) {
+      conteos[tabla] = (await db.getFirstAsync(`SELECT COUNT(*) AS total FROM ${tabla}`)).total;
+      filas[tabla] = await db.getAllAsync(`SELECT * FROM ${tabla} ORDER BY rowid`);
+    }
+  }
+  const version = await db.getFirstAsync('PRAGMA user_version');
+  return { version: version.user_version, tablas, conteos, filas };
+}
+
+async function expectIntegridad(db) {
+  await expect(db.getFirstAsync('PRAGMA integrity_check')).resolves.toEqual({ integrity_check: 'ok' });
+  await expect(db.getAllAsync('PRAGMA foreign_key_check')).resolves.toEqual([]);
+}
+
+async function crearFixtureHistorico(db, version) {
+  if (version < 1) return;
+  await db.execAsync(`
+    CREATE TABLE mis_libros (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      isbn TEXT UNIQUE,
+      titulo TEXT NOT NULL,
+      autor TEXT,
+      portada_url TEXT,
+      paginas_totales INTEGER,
+      pagina_actual INTEGER DEFAULT 0,
+      estado TEXT DEFAULT 'quiero leer',
+      calificacion INTEGER,
+      notas TEXT,
+      fecha_agregado DATETIME DEFAULT CURRENT_TIMESTAMP,
+      fecha_fin DATE
+    );
+    CREATE TABLE lista_compras (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      titulo TEXT NOT NULL,
+      autor TEXT,
+      prioridad TEXT NOT NULL DEFAULT 'media'
+        CHECK (prioridad IN ('alta', 'media', 'baja')),
+      precio_estimado REAL,
+      fecha_agregado TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await db.runAsync(
+    `INSERT INTO mis_libros
+      (isbn, titulo, autor, paginas_totales, pagina_actual, estado, fecha_agregado, fecha_fin)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    '9780306406157', `Libro v${version}`, 'Autora', 120, 12, 'leyendo',
+    '2026-01-01T00:00:00.000Z', null
+  );
+  await db.runAsync(
+    `INSERT INTO lista_compras (titulo, autor, prioridad, precio_estimado, fecha_agregado)
+     VALUES (?, ?, ?, ?, ?)`,
+    `Deseo v${version}`, 'Autor deseo', 'media', 10.5, '2026-01-02T00:00:00.000Z'
+  );
+
+  if (version >= 2) {
+    await db.execAsync(`
+      ALTER TABLE mis_libros ADD COLUMN uuid TEXT;
+      ALTER TABLE lista_compras ADD COLUMN uuid TEXT;
+      UPDATE mis_libros SET uuid = 'book-historico-0001';
+      UPDATE lista_compras SET uuid = 'wish-historico-0001';
+      CREATE UNIQUE INDEX idx_mis_libros_uuid ON mis_libros(uuid);
+      CREATE UNIQUE INDEX idx_lista_compras_uuid ON lista_compras(uuid);
+      CREATE INDEX idx_mis_libros_estado ON mis_libros(estado);
+      CREATE INDEX idx_mis_libros_fecha_fin ON mis_libros(fecha_fin);
+    `);
+  }
+
+  if (version >= 3) {
+    await db.execAsync(`
+      CREATE TABLE etiquetas (
+        uuid TEXT PRIMARY KEY,
+        nombre TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        fecha_creacion DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE TABLE libro_etiquetas (
+        libro_uuid TEXT NOT NULL,
+        etiqueta_uuid TEXT NOT NULL,
+        PRIMARY KEY (libro_uuid, etiqueta_uuid),
+        FOREIGN KEY (libro_uuid) REFERENCES mis_libros(uuid) ON DELETE CASCADE,
+        FOREIGN KEY (etiqueta_uuid) REFERENCES etiquetas(uuid) ON DELETE CASCADE
+      );
+      CREATE INDEX idx_libro_etiquetas_etiqueta ON libro_etiquetas(etiqueta_uuid);
+      CREATE VIRTUAL TABLE mis_libros_fts USING fts5(
+        titulo,
+        autor,
+        content='mis_libros',
+        content_rowid='id',
+        tokenize='unicode61 remove_diacritics 2'
+      );
+      CREATE TRIGGER mis_libros_fts_insert
+      AFTER INSERT ON mis_libros BEGIN
+        INSERT INTO mis_libros_fts(rowid, titulo, autor)
+        VALUES (new.id, new.titulo, COALESCE(new.autor, ''));
+      END;
+      CREATE TRIGGER mis_libros_fts_delete
+      AFTER DELETE ON mis_libros BEGIN
+        INSERT INTO mis_libros_fts(mis_libros_fts, rowid, titulo, autor)
+        VALUES ('delete', old.id, old.titulo, COALESCE(old.autor, ''));
+      END;
+      CREATE TRIGGER mis_libros_fts_update
+      AFTER UPDATE OF titulo, autor ON mis_libros BEGIN
+        INSERT INTO mis_libros_fts(mis_libros_fts, rowid, titulo, autor)
+        VALUES ('delete', old.id, old.titulo, COALESCE(old.autor, ''));
+        INSERT INTO mis_libros_fts(rowid, titulo, autor)
+        VALUES (new.id, new.titulo, COALESCE(new.autor, ''));
+      END;
+      INSERT INTO etiquetas (uuid, nombre) VALUES ('tag-historico-0001', 'Historia');
+      INSERT INTO libro_etiquetas (libro_uuid, etiqueta_uuid)
+      VALUES ('book-historico-0001', 'tag-historico-0001');
+      INSERT INTO mis_libros_fts(mis_libros_fts) VALUES ('rebuild');
+    `);
+  }
+
+  if (version >= 4) {
+    await db.execAsync(`
+      CREATE TABLE sesiones_lectura (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        libro_uuid TEXT NOT NULL,
+        fecha TEXT NOT NULL,
+        hora_inicio TEXT NOT NULL,
+        hora_fin TEXT,
+        paginas_leidas INTEGER NOT NULL DEFAULT 0 CHECK (paginas_leidas >= 0),
+        FOREIGN KEY (libro_uuid) REFERENCES mis_libros(uuid) ON DELETE CASCADE
+      );
+      CREATE INDEX idx_sesiones_fecha ON sesiones_lectura(fecha);
+      CREATE INDEX idx_sesiones_libro ON sesiones_lectura(libro_uuid);
+      CREATE UNIQUE INDEX idx_sesion_activa_por_libro
+      ON sesiones_lectura(libro_uuid) WHERE hora_fin IS NULL;
+      INSERT INTO sesiones_lectura (libro_uuid, fecha, hora_inicio, hora_fin, paginas_leidas)
+      VALUES ('book-historico-0001', '2026-01-03', '2026-01-03T10:00:00.000Z', '2026-01-03T10:30:00.000Z', 10);
+    `);
+  }
+
+  if (version >= 5) {
+    await db.execAsync(`
+      CREATE UNIQUE INDEX idx_sesiones_libro_hora_inicio
+      ON sesiones_lectura(libro_uuid, hora_inicio);
+    `);
+  }
+
+  if (version >= 6) {
+    await db.execAsync(`
+      ALTER TABLE sesiones_lectura ADD COLUMN pagina_inicio INTEGER NULL;
+      ALTER TABLE sesiones_lectura ADD COLUMN pagina_fin INTEGER NULL;
+      ALTER TABLE sesiones_lectura ADD COLUMN duracion_segundos INTEGER NULL;
+      ALTER TABLE lista_compras ADD COLUMN estado TEXT NOT NULL DEFAULT 'activo';
+      ALTER TABLE lista_compras ADD COLUMN fecha_resolucion TEXT NULL;
+      ALTER TABLE lista_compras ADD COLUMN libro_uuid_adquirido TEXT NULL;
+      UPDATE sesiones_lectura
+      SET pagina_inicio = 12, pagina_fin = 22, duracion_segundos = 1800;
+      CREATE INDEX idx_lista_compras_estado_fecha
+      ON lista_compras(estado, fecha_agregado);
+    `);
+  }
+
+  await db.execAsync(`PRAGMA user_version = ${version};`);
+}
+
 describe('integridad de database.js', () => {
+  test('inicializa una base limpia hasta versión 7 y repetir no cambia el estado', async () => {
+    const { database } = loadSubject();
+
+    const db = await database.inicializarBaseDeDatos();
+    const primero = await snapshotSemantico(db);
+
+    expect(primero.version).toBe(7);
+    expect(primero.tablas.map((item) => item.name)).toEqual(expect.arrayContaining([
+      'mis_libros', 'lista_compras', 'etiquetas', 'libro_etiquetas', 'mis_libros_fts', 'sesiones_lectura',
+    ]));
+    await expectIntegridad(db);
+    await expect(database.buscarLibros({ texto: 'inexistente' })).resolves.toEqual([]);
+
+    await database.inicializarBaseDeDatos();
+    await expect(snapshotSemantico(db)).resolves.toEqual(primero);
+  });
+
+  test('migra fixtures históricos 1 a 6 hasta versión 7 conservando datos e integridad', async () => {
+    for (const version of [1, 2, 3, 4, 5, 6]) {
+      jest.resetModules();
+      const sqlite = require('expo-sqlite');
+      sqlite.__reset();
+      const dbHistorica = await sqlite.openDatabaseAsync('biblioteca.db');
+      await crearFixtureHistorico(dbHistorica, version);
+      const antes = await snapshotSemantico(dbHistorica);
+      const database = require('../src/database');
+
+      await database.inicializarBaseDeDatos();
+
+      const despues = await snapshotSemantico(dbHistorica);
+      expect(despues.version).toBe(7);
+      expect(despues.filas.mis_libros[0]).toMatchObject({
+        titulo: `Libro v${version}`,
+        uuid: version >= 2 ? 'book-historico-0001' : expect.any(String),
+        fecha_inicio_lectura: null,
+      });
+      expect(despues.filas.lista_compras[0]).toMatchObject({
+        titulo: `Deseo v${version}`,
+        estado: 'activo',
+      });
+      if (version >= 3) {
+        expect(despues.filas.etiquetas).toEqual([expect.objectContaining({ uuid: 'tag-historico-0001' })]);
+        expect(despues.filas.libro_etiquetas).toHaveLength(1);
+      }
+      if (version >= 4) {
+        expect(despues.filas.sesiones_lectura[0]).toMatchObject({
+          libro_uuid: 'book-historico-0001',
+          uuid: expect.stringMatching(/^ses-/),
+          estado: 'completada',
+          origen: 'cronometro',
+        });
+      }
+      expect(despues.tablas.length).toBeGreaterThanOrEqual(antes.tablas.length);
+      await expectIntegridad(dbHistorica);
+    }
+  });
+
+  test('rollback atómico conserva base vacía si falla una instalación limpia', async () => {
+    const { database } = loadSubject();
+    const db = await database.getDatabase();
+    const antes = await snapshotSemantico(db);
+
+    await expect(database.inicializarBaseDeDatos({
+      onMigrationCheckpoint: async (name) => {
+        if (name === 'after-v4') throw new Error('fallo simulado intermedio');
+      },
+    })).rejects.toThrow(/fallo simulado intermedio/i);
+
+    await expect(snapshotSemantico(db)).resolves.toEqual(antes);
+    await expect(database.inicializarBaseDeDatos()).resolves.toBe(db);
+    const despues = await snapshotSemantico(db);
+    expect(despues.version).toBe(7);
+    expect(despues.tablas.map((item) => item.name)).toContain('mis_libros');
+    await expectIntegridad(db);
+  });
+
+  test('rollback atómico conserva esquema y datos v5 si falla la migración final y permite segundo intento', async () => {
+    jest.resetModules();
+    const sqlite = require('expo-sqlite');
+    sqlite.__reset();
+    const dbV5 = await sqlite.openDatabaseAsync('biblioteca.db');
+    await crearFixtureHistorico(dbV5, 5);
+    const antes = await snapshotSemantico(dbV5);
+    const database = require('../src/database');
+
+    await expect(database.inicializarBaseDeDatos({
+      onMigrationCheckpoint: async (name) => {
+        if (name === 'after-v7') throw new Error('fallo simulado final');
+      },
+    })).rejects.toThrow(/fallo simulado final/i);
+
+    await expect(snapshotSemantico(dbV5)).resolves.toEqual(antes);
+    await database.inicializarBaseDeDatos();
+    const despues = await snapshotSemantico(dbV5);
+    expect(despues.version).toBe(7);
+    expect(despues.filas.mis_libros[0].titulo).toBe('Libro v5');
+    expect(despues.filas.sesiones_lectura[0]).toMatchObject({
+      estado: 'completada',
+      duracion_segundos: 1800,
+    });
+    await expectIntegridad(dbV5);
+  });
+
+  test('rollback conserva user_version y datos si falla antes de confirmar user_version final', async () => {
+    jest.resetModules();
+    const sqlite = require('expo-sqlite');
+    sqlite.__reset();
+    const dbV6 = await sqlite.openDatabaseAsync('biblioteca.db');
+    await crearFixtureHistorico(dbV6, 6);
+    const antes = await snapshotSemantico(dbV6);
+    const database = require('../src/database');
+
+    await expect(database.inicializarBaseDeDatos({
+      onMigrationCheckpoint: async (name) => {
+        if (name === 'before-user-version') throw new Error('fallo antes de user_version');
+      },
+    })).rejects.toThrow(/fallo antes de user_version/i);
+
+    await expect(snapshotSemantico(dbV6)).resolves.toEqual(antes);
+    const version = await dbV6.getFirstAsync('PRAGMA user_version');
+    expect(version.user_version).toBe(6);
+  });
+
   test('migra una base versión 5 sin inventar páginas históricas y deriva duraciones válidas', async () => {
     jest.resetModules();
     const sqlite = require('expo-sqlite');

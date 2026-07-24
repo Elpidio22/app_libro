@@ -117,14 +117,24 @@ function validarLibro(libro) {
   };
 }
 
-export async function inicializarBaseDeDatos() {
+async function ejecutarCheckpointMigracion(options, name, context) {
+  if (typeof options?.onMigrationCheckpoint === 'function') {
+    await options.onMigrationCheckpoint(name, context);
+  }
+}
+
+export async function inicializarBaseDeDatos(options = {}) {
   const db = await getDatabase();
   await db.execAsync('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
   const versionRow = await db.getFirstAsync('PRAGMA user_version');
-  let version = Number(versionRow?.user_version) || 0;
+  const versionInicial = Number(versionRow?.user_version) || 0;
+  if (versionInicial >= DATABASE_VERSION) return db;
+
+  await db.withExclusiveTransactionAsync(async (migrationDb) => {
+  let version = versionInicial;
 
   if (version < 1) {
-    await db.execAsync(`
+    await migrationDb.execAsync(`
       CREATE TABLE IF NOT EXISTS mis_libros (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         isbn TEXT UNIQUE,
@@ -151,12 +161,12 @@ export async function inicializarBaseDeDatos() {
       UPDATE mis_libros SET estado = 'terminado' WHERE estado IN ('leído', 'leido');
     `);
     try {
-      await db.execAsync('ALTER TABLE mis_libros ADD COLUMN fecha_fin DATE;');
+      await migrationDb.execAsync('ALTER TABLE mis_libros ADD COLUMN fecha_fin DATE;');
     } catch (error) {
       if (!String(error?.message).includes('duplicate column')) throw error;
     }
-    await db.execAsync('PRAGMA user_version = 1;');
     version = 1;
+    await ejecutarCheckpointMigracion(options, 'after-v1', { version });
   }
 
   if (version < 2) {
@@ -165,12 +175,12 @@ export async function inicializarBaseDeDatos() {
       'ALTER TABLE lista_compras ADD COLUMN uuid TEXT',
     ]) {
       try {
-        await db.execAsync(statement);
+        await migrationDb.execAsync(statement);
       } catch (error) {
         if (!String(error?.message).includes('duplicate column')) throw error;
       }
     }
-    await db.execAsync(`
+    await migrationDb.execAsync(`
       UPDATE mis_libros
       SET uuid = lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-' || lower(hex(randomblob(2))) || '-' || lower(hex(randomblob(2))) || '-' || lower(hex(randomblob(6)))
       WHERE uuid IS NULL OR uuid = '';
@@ -181,13 +191,13 @@ export async function inicializarBaseDeDatos() {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_lista_compras_uuid ON lista_compras(uuid);
       CREATE INDEX IF NOT EXISTS idx_mis_libros_estado ON mis_libros(estado);
       CREATE INDEX IF NOT EXISTS idx_mis_libros_fecha_fin ON mis_libros(fecha_fin);
-      PRAGMA user_version = 2;
     `);
     version = 2;
+    await ejecutarCheckpointMigracion(options, 'after-v2', { version });
   }
 
   if (version < 3) {
-    await db.execAsync(`
+    await migrationDb.execAsync(`
       CREATE TABLE IF NOT EXISTS etiquetas (
         uuid TEXT PRIMARY KEY,
         nombre TEXT NOT NULL COLLATE NOCASE UNIQUE,
@@ -226,13 +236,13 @@ export async function inicializarBaseDeDatos() {
         VALUES (new.id, new.titulo, COALESCE(new.autor, ''));
       END;
       INSERT INTO mis_libros_fts(mis_libros_fts) VALUES ('rebuild');
-      PRAGMA user_version = 3;
     `);
     version = 3;
+    await ejecutarCheckpointMigracion(options, 'after-v3', { version });
   }
 
   if (version < 4) {
-    await db.execAsync(`
+    await migrationDb.execAsync(`
       CREATE TABLE IF NOT EXISTS sesiones_lectura (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         libro_uuid TEXT NOT NULL,
@@ -246,13 +256,13 @@ export async function inicializarBaseDeDatos() {
       CREATE INDEX IF NOT EXISTS idx_sesiones_libro ON sesiones_lectura(libro_uuid);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_sesion_activa_por_libro
       ON sesiones_lectura(libro_uuid) WHERE hora_fin IS NULL;
-      PRAGMA user_version = 4;
     `);
     version = 4;
+    await ejecutarCheckpointMigracion(options, 'after-v4', { version });
   }
 
   if (version < 5) {
-    await db.execAsync(`
+    await migrationDb.execAsync(`
       DELETE FROM sesiones_lectura
       WHERE id NOT IN (
         SELECT MIN(id)
@@ -261,9 +271,9 @@ export async function inicializarBaseDeDatos() {
       );
       CREATE UNIQUE INDEX IF NOT EXISTS idx_sesiones_libro_hora_inicio
       ON sesiones_lectura(libro_uuid, hora_inicio);
-      PRAGMA user_version = 5;
     `);
     version = 5;
+    await ejecutarCheckpointMigracion(options, 'after-v5', { version });
   }
 
   if (version < 6) {
@@ -276,12 +286,12 @@ export async function inicializarBaseDeDatos() {
       'ALTER TABLE lista_compras ADD COLUMN libro_uuid_adquirido TEXT NULL',
     ]) {
       try {
-        await db.execAsync(statement);
+        await migrationDb.execAsync(statement);
       } catch (error) {
         if (!String(error?.message).includes('duplicate column')) throw error;
       }
     }
-    await db.execAsync(`
+    await migrationDb.execAsync(`
       UPDATE sesiones_lectura
       SET duracion_segundos = CAST(ROUND((julianday(hora_fin) - julianday(hora_inicio)) * 86400) AS INTEGER)
       WHERE hora_fin IS NOT NULL
@@ -294,13 +304,13 @@ export async function inicializarBaseDeDatos() {
       WHERE estado IS NULL OR estado NOT IN ('activo', 'adquirido', 'descartado');
       CREATE INDEX IF NOT EXISTS idx_lista_compras_estado_fecha
       ON lista_compras(estado, fecha_agregado);
-      PRAGMA user_version = 6;
     `);
     version = 6;
+    await ejecutarCheckpointMigracion(options, 'after-v6', { version });
   }
 
   if (version < 7) {
-    const bookTable = await db.getFirstAsync(
+    const bookTable = await migrationDb.getFirstAsync(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'mis_libros'"
     );
     const statements = [
@@ -318,12 +328,12 @@ export async function inicializarBaseDeDatos() {
     if (bookTable) statements.unshift('ALTER TABLE mis_libros ADD COLUMN fecha_inicio_lectura TEXT NULL');
     for (const statement of statements) {
       try {
-        await db.execAsync(statement);
+        await migrationDb.execAsync(statement);
       } catch (error) {
         if (!String(error?.message).includes('duplicate column')) throw error;
       }
     }
-    await db.execAsync(`
+    await migrationDb.execAsync(`
       UPDATE sesiones_lectura
       SET uuid = 'ses-' || lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-' ||
                  lower(hex(randomblob(2))) || '-' || lower(hex(randomblob(2))) || '-' || lower(hex(randomblob(6)))
@@ -364,9 +374,14 @@ export async function inicializarBaseDeDatos() {
       ON sesiones_lectura(estado) WHERE estado = 'activa';
       CREATE INDEX IF NOT EXISTS idx_sesiones_libro_estado_fecha
       ON sesiones_lectura(libro_uuid, estado, fecha DESC);
-      PRAGMA user_version = ${DATABASE_VERSION};
     `);
+    version = 7;
+    await ejecutarCheckpointMigracion(options, 'after-v7', { version });
   }
+
+  await ejecutarCheckpointMigracion(options, 'before-user-version', { version });
+  await migrationDb.execAsync(`PRAGMA user_version = ${DATABASE_VERSION};`);
+  });
   return db;
 }
 
