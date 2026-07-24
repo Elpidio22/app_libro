@@ -3,10 +3,17 @@ const legacyFileSystem = require('expo-file-system/legacy');
 const sharing = require('expo-sharing');
 const {
   BACKUP_MIME_TYPE,
+  BACKUP_IMPORT_SIZE_UNKNOWN_MESSAGE,
+  BACKUP_IMPORT_TOO_LARGE_MESSAGE,
+  MAX_BACKUP_IMPORT_BYTES,
   compartirDocumentoBackup,
   crearNombreArchivoBackup,
   guardarDocumentoBackup,
+  leerTextoBackupImportacion,
+  medirBytesUTF8,
+  obtenerTamanoBackupImportacion,
   serializarBackup,
+  validarTamanoBackupImportacion,
   validarArchivoJSONSeleccionado,
 } = require('../src/services/backupFileService');
 
@@ -31,6 +38,42 @@ describe('backupFileService', () => {
 
   test('serializa un documento como JSON válido', () => {
     expect(JSON.parse(serializarBackup(validDocument))).toEqual(validDocument);
+  });
+
+  test('valida el límite exacto de importación en bytes', () => {
+    expect(MAX_BACKUP_IMPORT_BYTES).toBe(33554432);
+    expect(validarTamanoBackupImportacion(0)).toBe(0);
+    expect(validarTamanoBackupImportacion(1)).toBe(1);
+    expect(validarTamanoBackupImportacion(MAX_BACKUP_IMPORT_BYTES)).toBe(MAX_BACKUP_IMPORT_BYTES);
+    expect(() => validarTamanoBackupImportacion(MAX_BACKUP_IMPORT_BYTES + 1))
+      .toThrow(BACKUP_IMPORT_TOO_LARGE_MESSAGE);
+  });
+
+  test('rechaza tamaños desconocidos o inválidos antes de leer', () => {
+    for (const value of [undefined, null, Number.NaN, Infinity, -1, 'abc']) {
+      expect(() => validarTamanoBackupImportacion(value)).toThrow(BACKUP_IMPORT_SIZE_UNKNOWN_MESSAGE);
+    }
+  });
+
+  test('obtiene tamaño desde selector y usa FileSystem como fallback', async () => {
+    const fromPicker = await obtenerTamanoBackupImportacion({ uri: 'file:///x.json', size: '12' }, null);
+    expect(fromPicker).toBe(12);
+
+    const file = new fileSystem.File(fileSystem.Paths.cache, 'fallback.json');
+    file.create();
+    file.write('12345');
+    await expect(obtenerTamanoBackupImportacion({ uri: file.uri }, file)).resolves.toBe(5);
+  });
+
+  test('lectura protegida permite el límite y mide UTF-8 real antes de parsear', async () => {
+    const file = new fileSystem.File(fileSystem.Paths.cache, 'utf8.json');
+    file.create();
+    file.write('éé');
+    expect(medirBytesUTF8('éé')).toBe(4);
+    await expect(leerTextoBackupImportacion({ uri: file.uri, size: 4 }, file, { maxBackupImportBytes: 4 }))
+      .resolves.toBe('éé');
+    await expect(leerTextoBackupImportacion({ uri: file.uri, size: 1 }, file, { maxBackupImportBytes: 3 }))
+      .rejects.toThrow(BACKUP_IMPORT_TOO_LARGE_MESSAGE);
   });
 
   test('cancelar el selector de carpeta no escribe ni produce un error', async () => {

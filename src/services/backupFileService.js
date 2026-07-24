@@ -3,6 +3,9 @@ import { deleteAsync, EncodingType, StorageAccessFramework } from 'expo-file-sys
 import * as Sharing from 'expo-sharing';
 
 export const BACKUP_MIME_TYPE = 'application/json';
+export const MAX_BACKUP_IMPORT_BYTES = 32 * 1024 * 1024;
+export const BACKUP_IMPORT_TOO_LARGE_MESSAGE = 'El respaldo supera el tamaño máximo permitido de 32 MB.';
+export const BACKUP_IMPORT_SIZE_UNKNOWN_MESSAGE = 'No se pudo verificar el tamaño del respaldo.';
 
 export class BackupFileError extends Error {
   constructor(code, message, cause = null) {
@@ -44,6 +47,87 @@ function isAccessError(error) {
     || message.includes('denied')
     || message.includes('securityexception')
     || message.includes('eacces');
+}
+
+function normalizarBytes(value) {
+  if (typeof value === 'string' && /^\d+$/.test(value.trim())) return Number(value.trim());
+  if (typeof value !== 'number') return null;
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+export function medirBytesUTF8(texto) {
+  const value = String(texto ?? '');
+  if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(value).length;
+  let bytes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x80) {
+      bytes += 1;
+    } else if (code < 0x800) {
+      bytes += 2;
+    } else if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index += 1;
+      } else {
+        bytes += 3;
+      }
+    } else {
+      bytes += 3;
+    }
+  }
+  return bytes;
+}
+
+export function validarTamanoBackupImportacion(bytes, {
+  maxBackupImportBytes = MAX_BACKUP_IMPORT_BYTES,
+  allowUnknown = false,
+} = {}) {
+  const normalizedBytes = normalizarBytes(bytes);
+  if (normalizedBytes === null) {
+    if (allowUnknown) return null;
+    throw new BackupFileError('TAMANO_DESCONOCIDO', BACKUP_IMPORT_SIZE_UNKNOWN_MESSAGE);
+  }
+  if (normalizedBytes > maxBackupImportBytes) {
+    throw new BackupFileError('RESPALDO_DEMASIADO_GRANDE', BACKUP_IMPORT_TOO_LARGE_MESSAGE);
+  }
+  return normalizedBytes;
+}
+
+export async function obtenerTamanoBackupImportacion(asset, archivo) {
+  if (Object.prototype.hasOwnProperty.call(asset || {}, 'size') && asset.size !== undefined && asset.size !== null) {
+    return validarTamanoBackupImportacion(asset.size, { allowUnknown: false });
+  }
+
+  if (archivo && typeof archivo.info === 'function') {
+    try {
+      const info = await archivo.info();
+      if (info?.exists === false) {
+        throw new BackupFileError('TAMANO_DESCONOCIDO', BACKUP_IMPORT_SIZE_UNKNOWN_MESSAGE);
+      }
+      return validarTamanoBackupImportacion(info?.size, { allowUnknown: false });
+    } catch {
+      throw new BackupFileError('TAMANO_DESCONOCIDO', BACKUP_IMPORT_SIZE_UNKNOWN_MESSAGE);
+    }
+  }
+
+  if (archivo && Object.prototype.hasOwnProperty.call(archivo, 'size')) {
+    return validarTamanoBackupImportacion(archivo.size, { allowUnknown: false });
+  }
+
+  throw new BackupFileError('TAMANO_DESCONOCIDO', BACKUP_IMPORT_SIZE_UNKNOWN_MESSAGE);
+}
+
+export async function leerTextoBackupImportacion(asset, archivo, {
+  maxBackupImportBytes = MAX_BACKUP_IMPORT_BYTES,
+} = {}) {
+  const declaredBytes = await obtenerTamanoBackupImportacion(asset, archivo);
+  validarTamanoBackupImportacion(declaredBytes, { maxBackupImportBytes });
+  const contenido = await archivo.text();
+  const realBytes = medirBytesUTF8(contenido);
+  validarTamanoBackupImportacion(realBytes, { maxBackupImportBytes });
+  return contenido;
 }
 
 export async function guardarDocumentoBackup({ contenido, nombre }) {

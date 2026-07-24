@@ -794,6 +794,98 @@ describe('integridad de database.js', () => {
     await expect(database.seleccionarBackupParaImportar()).rejects.toThrow(/\.json/i);
   });
 
+  test('rechaza respaldos demasiado grandes antes de leer, parsear o tocar SQLite', async () => {
+    const { database, sqlite, fileSystem, documentPicker } = loadSubject();
+    await database.inicializarBaseDeDatos();
+    const before = sqlite.__getState();
+    documentPicker.__setResult({
+      canceled: false,
+      assets: [{
+        uri: 'content://downloads/gigante.json',
+        name: 'gigante.json',
+        mimeType: 'application/json',
+        size: 6,
+      }],
+    });
+
+    await expect(database.importarBackupJSON({ maxBackupImportBytes: 5 })).rejects.toThrow(/32 MB/i);
+
+    expect(fileSystem.__textCalls()).toBe(0);
+    expect(sqlite.__getState().misLibros).toEqual(before.misLibros);
+    expect(sqlite.__getState().listaCompras).toEqual(before.listaCompras);
+  });
+
+  test('usa FileSystem como fallback de tamaño y permite archivo exactamente en el límite', async () => {
+    const { database, fileSystem, documentPicker } = loadSubject();
+    await database.inicializarBaseDeDatos();
+    const backupFile = new fileSystem.File(fileSystem.Paths.cache, 'limite.json');
+    const contenido = JSON.stringify({
+      tipo: 'mi-biblioteca-backup',
+      version: 7,
+      libros: [],
+      lista_compras: [],
+      etiquetas: [],
+      libro_etiquetas: [],
+      sesiones_lectura: [],
+    });
+    backupFile.create();
+    backupFile.write(contenido);
+    documentPicker.__setResult({
+      canceled: false,
+      assets: [{ uri: backupFile.uri, name: 'limite.json', mimeType: 'application/json' }],
+    });
+
+    await expect(database.seleccionarBackupParaImportar({ maxBackupImportBytes: contenido.length }))
+      .resolves.toMatchObject({ cancelado: false, resumen: { version: 7 } });
+    expect(fileSystem.__textCalls()).toBe(1);
+  });
+
+  test('un archivo de 0 bytes pasa el límite y queda en validación JSON existente', async () => {
+    const { database, fileSystem, documentPicker } = loadSubject();
+    await database.inicializarBaseDeDatos();
+    const backupFile = new fileSystem.File(fileSystem.Paths.cache, 'vacio.json');
+    backupFile.create();
+    backupFile.write('');
+    documentPicker.__setResult({
+      canceled: false,
+      assets: [{ uri: backupFile.uri, name: 'vacio.json', mimeType: 'application/json', size: 0 }],
+    });
+
+    await expect(database.seleccionarBackupParaImportar({ maxBackupImportBytes: 0 })).rejects.toThrow(/JSON válido/i);
+    expect(fileSystem.__textCalls()).toBe(1);
+  });
+
+  test('rechaza tamaño desconocido sin leer el archivo', async () => {
+    const { database, fileSystem, documentPicker } = loadSubject();
+    await database.inicializarBaseDeDatos();
+    documentPicker.__setResult({
+      canceled: false,
+      assets: [{ uri: 'content://downloads/desconocido.json', name: 'desconocido.json', mimeType: 'application/json' }],
+    });
+
+    await expect(database.seleccionarBackupParaImportar()).rejects.toThrow(/verificar el tamaño/i);
+
+    expect(fileSystem.__textCalls()).toBe(0);
+  });
+
+  test('rechaza contenido real mayor al límite antes de JSON.parse', async () => {
+    const { database, sqlite, fileSystem, documentPicker } = loadSubject();
+    await database.inicializarBaseDeDatos();
+    const before = sqlite.__getState();
+    const backupFile = new fileSystem.File(fileSystem.Paths.cache, 'multibyte.json');
+    backupFile.create();
+    backupFile.write('éé{');
+    documentPicker.__setResult({
+      canceled: false,
+      assets: [{ uri: backupFile.uri, name: 'multibyte.json', mimeType: 'application/json', size: 3 }],
+    });
+
+    await expect(database.seleccionarBackupParaImportar({ maxBackupImportBytes: 3 })).rejects.toThrow(/32 MB/i);
+
+    expect(fileSystem.__textCalls()).toBe(1);
+    expect(sqlite.__getState().misLibros).toEqual(before.misLibros);
+  });
+
   test('rechaza contenido JSON mal formado y refresca revisiones tras una importación válida', async () => {
     const { database, fileSystem, documentPicker } = loadSubject();
     const revisions = require('../src/database/revisions');
@@ -875,6 +967,59 @@ describe('integridad de database.js', () => {
         libro_uuid: bookUuid, paginas_leidas: 18,
         pagina_inicio: 30, pagina_fin: 48, duracion_segundos: 1800,
       }),
+    ]);
+  });
+
+  test('Merge y Replace reutilizan el límite de tamaño del archivo seleccionado', async () => {
+    const { database, sqlite, fileSystem, documentPicker } = loadSubject();
+    await database.inicializarBaseDeDatos();
+    await database.insertarLibro({ uuid: 'book-local-limit-0001', titulo: 'Local protegido' });
+    const backup = {
+      tipo: 'mi-biblioteca-backup',
+      version: 7,
+      libros: [{ uuid: 'book-import-limit-01', titulo: 'Importado por límite', estado: 'quiero leer', pagina_actual: 0 }],
+      lista_compras: [],
+      etiquetas: [],
+      libro_etiquetas: [],
+      sesiones_lectura: [],
+    };
+    const contenido = JSON.stringify(backup);
+    const { medirBytesUTF8 } = require('../src/services/backupFileService');
+    const contenidoBytes = medirBytesUTF8(contenido);
+    const backupFile = new fileSystem.File(fileSystem.Paths.cache, 'merge-replace.json');
+    backupFile.create();
+    backupFile.write(contenido);
+
+    documentPicker.__setResult({
+      canceled: false,
+      assets: [{ uri: backupFile.uri, name: 'merge-replace.json', mimeType: 'application/json', size: contenidoBytes }],
+    });
+    await expect(database.importarBackupJSON({ maxBackupImportBytes: contenidoBytes }))
+      .resolves.toMatchObject({ modo: 'fusionar', importados: 1 });
+    expect(sqlite.__getState().misLibros).toHaveLength(2);
+
+    documentPicker.__setResult({
+      canceled: false,
+      assets: [{ uri: backupFile.uri, name: 'merge-replace.json', mimeType: 'application/json', size: contenidoBytes + 1 }],
+    });
+    await expect(database.importarBackupJSON({
+      modo: 'reemplazar',
+      confirmadoReemplazo: true,
+      maxBackupImportBytes: contenidoBytes,
+    })).rejects.toThrow(/32 MB/i);
+    expect(sqlite.__getState().misLibros).toHaveLength(2);
+
+    documentPicker.__setResult({
+      canceled: false,
+      assets: [{ uri: backupFile.uri, name: 'merge-replace.json', mimeType: 'application/json', size: contenidoBytes }],
+    });
+    await expect(database.importarBackupJSON({
+      modo: 'reemplazar',
+      confirmadoReemplazo: true,
+      maxBackupImportBytes: contenidoBytes,
+    })).resolves.toMatchObject({ modo: 'reemplazar', importados: 1 });
+    expect(sqlite.__getState().misLibros).toEqual([
+      expect.objectContaining({ uuid: 'book-import-limit-01', titulo: 'Importado por límite' }),
     ]);
   });
 

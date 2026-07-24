@@ -18,6 +18,7 @@ import {
   compartirDocumentoBackup,
   crearNombreArchivoBackup,
   guardarDocumentoBackup,
+  leerTextoBackupImportacion,
   serializarBackup,
   validarArchivoJSONSeleccionado,
 } from './services/backupFileService';
@@ -1432,7 +1433,7 @@ export async function exportarBackupJSON() {
 }
 
 
-export async function seleccionarBackupParaImportar() {
+export async function seleccionarBackupParaImportar({ maxBackupImportBytes } = {}) {
   const seleccion = await DocumentPicker.getDocumentAsync({
     type: 'application/json',
     copyToCacheDirectory: true,
@@ -1442,7 +1443,7 @@ export async function seleccionarBackupParaImportar() {
 
   const asset = validarArchivoJSONSeleccionado(seleccion.assets?.[0]);
   const archivo = new File(asset);
-  const contenido = await archivo.text();
+  const contenido = await leerTextoBackupImportacion(asset, archivo, { maxBackupImportBytes });
   let documento;
   try {
     documento = JSON.parse(contenido);
@@ -1476,7 +1477,7 @@ export async function ejecutarImportacionBackup(
 }
 
 export async function importarBackupJSON(options = {}) {
-  const seleccion = await seleccionarBackupParaImportar();
+  const seleccion = await seleccionarBackupParaImportar(options);
   if (seleccion.cancelado) return { cancelado: true, importados: 0 };
   return ejecutarImportacionBackup(seleccion.backup, options);
 }

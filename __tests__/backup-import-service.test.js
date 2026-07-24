@@ -47,6 +47,34 @@ describe('backupImportService', () => {
     expect(summary).toMatchObject({ version: 5, libros: 0, lista_compras: 0 });
   });
 
+  test('mantiene compatibilidad de importación para backups v2 a v7', async () => {
+    const { service, db, sqlite } = await loadSubject();
+
+    for (const version of [2, 3, 4, 5, 6, 7]) {
+      await service.importPreparedBackup({
+        db,
+        document: {
+          tipo: service.BACKUP_TYPE,
+          version,
+          libros: [{
+            uuid: `book-compat-v${version}-0001`,
+            titulo: `Compat v${version}`,
+            estado: 'quiero leer',
+            pagina_actual: 0,
+          }],
+          lista_compras: [],
+          etiquetas: [],
+          libro_etiquetas: [],
+          sesiones_lectura: [],
+        },
+      });
+    }
+
+    expect(sqlite.__getState().misLibros.map((book) => book.titulo)).toEqual([
+      'Compat v2', 'Compat v3', 'Compat v4', 'Compat v5', 'Compat v6', 'Compat v7',
+    ]);
+  });
+
   test('importa v7 preservando libros, relaciones y sesiones completas', async () => {
     const { service, db, sqlite, database } = await loadSubject();
     const backup = {

@@ -1,5 +1,6 @@
 const files = new Map();
 const failures = new Map();
+let textCalls = 0;
 
 const Paths = Object.freeze({
   cache: 'file:///virtual/cache/',
@@ -43,10 +44,22 @@ class Directory {
 class File {
   constructor(parent, name) {
     this.uri = join(parent, name);
+    this.assetSize = parent && typeof parent === 'object' && !(parent instanceof File) && !(parent instanceof Directory)
+      ? parent.size
+      : undefined;
   }
 
   get exists() {
     return files.has(this.uri);
+  }
+
+  get size() {
+    if (this.assetSize !== undefined) return this.assetSize;
+    const entry = files.get(this.uri);
+    if (!entry || entry.type !== 'file') return 0;
+    const data = entry.data || '';
+    if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(String(data)).length;
+    return Buffer.from(typeof data === 'string' ? data : data).length;
   }
 
   create() {
@@ -60,9 +73,15 @@ class File {
   }
 
   async text() {
+    textCalls += 1;
     maybeFail('file.text');
     const entry = files.get(this.uri);
     return typeof entry?.data === 'string' ? entry.data : Buffer.from(entry?.data || []).toString('utf8');
+  }
+
+  async info() {
+    maybeFail('file.info');
+    return { exists: this.exists, size: this.size, uri: this.uri };
   }
 
   async base64() {
@@ -99,6 +118,7 @@ module.exports = {
   __reset() {
     files.clear();
     failures.clear();
+    textCalls = 0;
   },
   __setFailure(operation, error) {
     failures.set(operation, error);
@@ -108,5 +128,8 @@ module.exports = {
   },
   __list() {
     return [...files.keys()];
+  },
+  __textCalls() {
+    return textCalls;
   },
 };
