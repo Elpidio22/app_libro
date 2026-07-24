@@ -32,7 +32,7 @@ import {
 } from './services/readingSessionService';
 
 const DATABASE_NAME = 'biblioteca.db';
-const BACKUP_VERSION = 6;
+const BACKUP_VERSION = 7;
 const DATABASE_VERSION = 7;
 const ESTADOS_VALIDOS = ['quiero leer', 'leyendo', 'terminado', 'abandonado'];
 

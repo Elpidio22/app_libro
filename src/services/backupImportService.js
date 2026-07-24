@@ -4,12 +4,19 @@ import {
   optimizarYGuardarPortada,
 } from '../portadas';
 import { obtenerVariantesISBN } from './isbnService';
+import {
+  normalizeLocalDate,
+  SESSION_ORIGINS,
+  SESSION_STATES,
+  validateDurationSeconds,
+  validateReadingDates,
+} from './readingSessionService';
 
 export const BACKUP_TYPE = 'mi-biblioteca-backup';
-// La versión 5 es el formato portable objetivo. Se conservan las versiones
-// históricas que la aplicación ya podía restaurar y la versión 6 que exporta
-// actualmente, sin aceptar formatos futuros de forma implícita.
-export const SUPPORTED_BACKUP_VERSIONS = Object.freeze([2, 3, 4, 5, 6]);
+// La versión 7 es el formato portable actual. Se conservan las versiones
+// históricas que la aplicación ya podía restaurar, sin aceptar formatos futuros
+// de forma implícita.
+export const SUPPORTED_BACKUP_VERSIONS = Object.freeze([2, 3, 4, 5, 6, 7]);
 export const IMPORT_MODES = Object.freeze({ MERGE: 'fusionar', REPLACE: 'reemplazar' });
 
 const COLLECTIONS = Object.freeze([
@@ -21,6 +28,8 @@ const COLLECTIONS = Object.freeze([
 ]);
 const BOOK_STATES = new Set(['quiero leer', 'leyendo', 'terminado', 'abandonado']);
 const HISTORICAL_STATES = Object.freeze({ leído: 'terminado', leido: 'terminado' });
+const SESSION_STATE_VALUES = new Set(Object.values(SESSION_STATES));
+const SESSION_ORIGIN_VALUES = new Set(Object.values(SESSION_ORIGINS));
 
 function cleanText(value) {
   return String(value ?? '').trim();
@@ -54,6 +63,16 @@ function nonNegativeIntegerOrNull(value) {
   if (value === null || value === undefined || value === '') return null;
   const number = Number(value);
   return Number.isInteger(number) && number >= 0 ? number : NaN;
+}
+
+function integerFlag(value) {
+  return Number(value) === 1 ? 1 : 0;
+}
+
+function timestampOrNull(value) {
+  const text = cleanText(value);
+  if (!text) return null;
+  return Number.isFinite(Date.parse(text)) ? text : null;
 }
 
 function deterministicUUID(prefix, ...parts) {
@@ -140,9 +159,11 @@ export function validateBackupDocument(input) {
   };
 }
 
-function sanitizeBook(record, index) {
+function sanitizeBook(record, index, version) {
   const titulo = cleanText(record?.titulo);
   if (!titulo) throw new Error(`Libro ${index + 1}: el título es obligatorio.`);
+  const importedUuid = normalizeBackupUUID(record.uuid);
+  if (version >= 7 && !importedUuid) throw new Error(`Libro "${titulo}": UUID inválido.`);
   const paginasTotales = positiveIntegerOrNull(record.paginas_totales);
   if (Number.isNaN(paginasTotales)) throw new Error(`Libro "${titulo}": páginas totales inválidas.`);
   const paginaActual = nonNegativeIntegerOrNull(record.pagina_actual ?? 0);
@@ -158,9 +179,10 @@ function sanitizeBook(record, index) {
   }
   const isbn = normalizeBackupISBN(record.isbn);
   const variants = reliableISBNVariants(isbn);
+  const fechas = validateReadingDates(record.fecha_inicio_lectura, record.fecha_fin);
   return {
     oldId: record.id === null || record.id === undefined ? null : String(record.id),
-    importedUuid: normalizeBackupUUID(record.uuid),
+    importedUuid,
     isbn,
     reliableIsbn: variants.length > 0,
     isbnVariants: variants,
@@ -174,13 +196,16 @@ function sanitizeBook(record, index) {
     calificacion: rating,
     notas: cleanText(record.notas) || null,
     fecha_agregado: cleanText(record.fecha_agregado) || new Date().toISOString(),
-    fecha_fin: cleanText(record.fecha_fin) || null,
+    fecha_inicio_lectura: fechas.start,
+    fecha_fin: fechas.finish,
   };
 }
 
-function sanitizeWishlist(record, index) {
+function sanitizeWishlist(record, index, version) {
   const titulo = cleanText(record?.titulo);
   if (!titulo) throw new Error(`Deseo ${index + 1}: el título es obligatorio.`);
+  const importedUuid = normalizeBackupUUID(record.uuid);
+  if (version >= 7 && !importedUuid) throw new Error(`Deseo "${titulo}": UUID inválido.`);
   const price = record.precio_estimado === null || record.precio_estimado === undefined || record.precio_estimado === ''
     ? null
     : Number(record.precio_estimado);
@@ -188,7 +213,7 @@ function sanitizeWishlist(record, index) {
   const state = ['activo', 'adquirido', 'descartado'].includes(record.estado) ? record.estado : 'activo';
   return {
     oldId: record.id === null || record.id === undefined ? null : String(record.id),
-    importedUuid: normalizeBackupUUID(record.uuid),
+    importedUuid,
     titulo,
     autor: cleanText(record.autor) || null,
     prioridad: ['alta', 'media', 'baja'].includes(record.prioridad) ? record.prioridad : 'media',
@@ -200,11 +225,11 @@ function sanitizeWishlist(record, index) {
   };
 }
 
-function collectSanitized(records, sanitizer, entity, result) {
+function collectSanitized(records, sanitizer, entity, result, version) {
   const accepted = [];
   records.forEach((record, index) => {
     try {
-      accepted.push(sanitizer(record, index));
+      accepted.push(sanitizer(record, index, version));
     } catch (error) {
       result[entity].rechazados += 1;
       result.advertencias.push(error.message);
@@ -275,6 +300,7 @@ function mergedBook(imported, local, mode, importedCover) {
     calificacion: useful(imported.calificacion, local?.calificacion ?? null),
     notas: useful(imported.notas, local?.notas ?? null),
     fecha_agregado: local?.fecha_agregado || imported.fecha_agregado,
+    fecha_inicio_lectura: useful(imported.fecha_inicio_lectura, local?.fecha_inicio_lectura ?? null),
     fecha_fin: useful(imported.fecha_fin, local?.fecha_fin ?? null),
   };
 }
@@ -297,32 +323,80 @@ function resolveMappedBook(record, maps) {
   return uuid || null;
 }
 
-function safeSession(record, bookUuid) {
-  const fecha = cleanText(record?.fecha);
-  const start = cleanText(record?.hora_inicio);
+function safeSession(record, bookUuid, version) {
+  const fecha = normalizeLocalDate(record?.fecha);
+  const start = timestampOrNull(record?.hora_inicio);
   if (!bookUuid || !fecha || !start) return null;
   const pages = nonNegativeIntegerOrNull(record.paginas_leidas ?? 0);
   const pageStart = nonNegativeIntegerOrNull(record.pagina_inicio);
   const pageEnd = nonNegativeIntegerOrNull(record.pagina_fin);
   let duration = nonNegativeIntegerOrNull(record.duracion_segundos);
-  if ([pages, pageStart, pageEnd, duration].some(Number.isNaN)) return null;
+  const accumulated = nonNegativeIntegerOrNull(record.duracion_acumulada_segundos);
+  if ([pages, pageStart, pageEnd, duration, accumulated].some(Number.isNaN)) return null;
   if (pageStart !== null && pageEnd !== null && pageEnd < pageStart) return null;
-  if (duration === null && record?.hora_fin) {
+  const horaFin = timestampOrNull(record.hora_fin);
+  if (record?.hora_fin && !horaFin) return null;
+  if (duration === null && horaFin) {
     const startTime = new Date(start).getTime();
-    const endTime = new Date(record.hora_fin).getTime();
+    const endTime = new Date(horaFin).getTime();
     if (Number.isFinite(startTime) && Number.isFinite(endTime) && endTime >= startTime) {
       duration = Math.floor((endTime - startTime) / 1000);
     }
   }
+  if (duration !== null) {
+    try {
+      validateDurationSeconds(duration);
+    } catch {
+      return null;
+    }
+  }
+  if (accumulated !== null) {
+    try {
+      validateDurationSeconds(Math.max(1, accumulated));
+    } catch {
+      return null;
+    }
+  }
+  const explicitState = version >= 7 && record.estado !== undefined && record.estado !== null && cleanText(record.estado);
+  const state = explicitState ? cleanText(record.estado) : SESSION_STATES.COMPLETED;
+  if (!SESSION_STATE_VALUES.has(state)) return null;
+  const origin = version >= 7 && record.origen !== undefined && record.origen !== null && cleanText(record.origen)
+    ? cleanText(record.origen)
+    : SESSION_ORIGINS.TIMER;
+  if (!SESSION_ORIGIN_VALUES.has(origin)) return null;
+  if (version < 7 && !horaFin) return null;
+  if (state === SESSION_STATES.ACTIVE && horaFin) return null;
+  if (state !== SESSION_STATES.ACTIVE && !horaFin) return null;
+  if (state === SESSION_STATES.PENDING && pageEnd !== null) return null;
+  if (state === SESSION_STATES.COMPLETED && pageStart !== null && pageEnd === null) return null;
+  const sessionUuid = normalizeBackupUUID(record.uuid)
+    || (version < 7 ? deterministicUUID('legacy-session', bookUuid, start) : null);
+  if (!sessionUuid) return null;
+  const ultimoInicio = timestampOrNull(record.ultimo_inicio);
+  const pausadaEn = timestampOrNull(record.pausada_en);
+  const fechaCreacion = timestampOrNull(record.fecha_creacion) || start;
+  const fechaActualizacion = timestampOrNull(record.fecha_actualizacion) || horaFin || start;
+  if ((record.ultimo_inicio && !ultimoInicio) || (record.pausada_en && !pausadaEn)
+    || (record.fecha_creacion && !fechaCreacion) || (record.fecha_actualizacion && !fechaActualizacion)) return null;
   return {
+    uuid: sessionUuid,
     libro_uuid: bookUuid,
     fecha,
     hora_inicio: start,
-    hora_fin: cleanText(record.hora_fin) || null,
+    hora_fin: horaFin,
     paginas_leidas: pages ?? 0,
     pagina_inicio: pageStart,
-    pagina_fin: pageEnd,
+    pagina_fin: state === SESSION_STATES.PENDING ? null : pageEnd,
     duracion_segundos: duration,
+    estado: state,
+    origen: origin,
+    nota: cleanText(record.nota) || null,
+    duracion_acumulada_segundos: accumulated ?? duration ?? 0,
+    ultimo_inicio: state === SESSION_STATES.ACTIVE ? (ultimoInicio || start) : null,
+    pausada_en: state === SESSION_STATES.ACTIVE ? pausadaEn : null,
+    fecha_creacion: fechaCreacion,
+    fecha_actualizacion: fechaActualizacion,
+    editada: integerFlag(record.editada),
   };
 }
 
@@ -341,8 +415,8 @@ export async function importPreparedBackup({
   }
   const { backup } = validateBackupDocument(document);
   const result = createResult(mode, backup.version);
-  const books = collectSanitized(backup.libros, sanitizeBook, 'libros', result);
-  const wishlist = collectSanitized(backup.lista_compras, sanitizeWishlist, 'lista_compras', result);
+  const books = collectSanitized(backup.libros, sanitizeBook, 'libros', result, backup.version);
+  const wishlist = collectSanitized(backup.lista_compras, sanitizeWishlist, 'lista_compras', result, backup.version);
   const currentBooks = mode === IMPORT_MODES.REPLACE ? [] : await db.getAllAsync('SELECT * FROM mis_libros ORDER BY id');
   const currentWishlist = mode === IMPORT_MODES.REPLACE ? [] : await db.getAllAsync('SELECT * FROM lista_compras ORDER BY id');
   const allExistingCovers = mode === IMPORT_MODES.REPLACE
@@ -424,20 +498,23 @@ export async function importPreparedBackup({
         if (plan.local && mode === IMPORT_MODES.MERGE) {
           await tx.runAsync(
             `UPDATE mis_libros SET isbn = ?, titulo = ?, autor = ?, portada_url = ?, paginas_totales = ?,
-             pagina_actual = ?, estado = ?, calificacion = ?, notas = ?, fecha_fin = ? WHERE id = ?`,
+             pagina_actual = ?, estado = ?, calificacion = ?, notas = ?, fecha_inicio_lectura = ?,
+             fecha_fin = ? WHERE id = ?`,
             plan.data.isbn, plan.data.titulo, plan.data.autor, plan.data.portada_url,
             plan.data.paginas_totales, plan.data.pagina_actual, plan.data.estado,
-            plan.data.calificacion, plan.data.notas, plan.data.fecha_fin, plan.local.id
+            plan.data.calificacion, plan.data.notas, plan.data.fecha_inicio_lectura,
+            plan.data.fecha_fin, plan.local.id
           );
           result.libros.actualizados += 1;
         } else {
           await tx.runAsync(
             `INSERT INTO mis_libros
-              (uuid, isbn, titulo, autor, portada_url, paginas_totales, pagina_actual, estado, calificacion, notas, fecha_agregado, fecha_fin)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              (uuid, isbn, titulo, autor, portada_url, paginas_totales, pagina_actual, estado,
+               calificacion, notas, fecha_agregado, fecha_inicio_lectura, fecha_fin)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             plan.data.uuid, plan.data.isbn, plan.data.titulo, plan.data.autor, plan.data.portada_url,
             plan.data.paginas_totales, plan.data.pagina_actual, plan.data.estado, plan.data.calificacion,
-            plan.data.notas, plan.data.fecha_agregado, plan.data.fecha_fin
+            plan.data.notas, plan.data.fecha_agregado, plan.data.fecha_inicio_lectura, plan.data.fecha_fin
           );
           result.libros.creados += 1;
         }
@@ -524,7 +601,7 @@ export async function importPreparedBackup({
 
       for (const sessionRecord of backup.sesiones_lectura) {
         const bookUuid = resolveMappedBook(sessionRecord, maps);
-        const session = safeSession(sessionRecord, bookUuid);
+        const session = safeSession(sessionRecord, bookUuid, backup.version);
         const bookExists = bookUuid ? await tx.getFirstAsync('SELECT uuid FROM mis_libros WHERE uuid = ?', bookUuid) : null;
         if (!session || !bookExists) {
           result.sesiones_lectura.omitidos += 1;
@@ -532,33 +609,41 @@ export async function importPreparedBackup({
           continue;
         }
         const existing = await tx.getFirstAsync(
-          'SELECT id FROM sesiones_lectura WHERE libro_uuid = ? AND hora_inicio = ?',
+          'SELECT id FROM sesiones_lectura WHERE uuid = ? OR (libro_uuid = ? AND hora_inicio = ?)',
+          session.uuid,
           session.libro_uuid,
           session.hora_inicio
         );
         if (existing) {
           await tx.runAsync(
             `UPDATE sesiones_lectura SET fecha = ?, hora_fin = ?, paginas_leidas = ?, pagina_inicio = ?,
-             pagina_fin = ?, duracion_segundos = ? WHERE id = ?`,
+             pagina_fin = ?, duracion_segundos = ?, uuid = ?, estado = ?, origen = ?, nota = ?,
+             duracion_acumulada_segundos = ?, ultimo_inicio = ?, pausada_en = ?,
+             fecha_creacion = ?, fecha_actualizacion = ?, editada = ? WHERE id = ?`,
             session.fecha, session.hora_fin, session.paginas_leidas, session.pagina_inicio,
-            session.pagina_fin, session.duracion_segundos, existing.id
+            session.pagina_fin, session.duracion_segundos, session.uuid, session.estado, session.origen,
+            session.nota, session.duracion_acumulada_segundos, session.ultimo_inicio, session.pausada_en,
+            session.fecha_creacion, session.fecha_actualizacion, session.editada, existing.id
           );
           result.sesiones_lectura.actualizados += 1;
         } else {
-          const active = !session.hora_fin
-            ? await tx.getFirstAsync('SELECT id FROM sesiones_lectura WHERE libro_uuid = ? AND hora_fin IS NULL', session.libro_uuid)
+          const active = session.estado === SESSION_STATES.ACTIVE
+            ? await tx.getFirstAsync("SELECT id FROM sesiones_lectura WHERE estado = 'activa'")
             : null;
           if (active) {
-            result.sesiones_lectura.omitidos += 1;
-            result.advertencias.push('Se omitió una segunda sesión activa para el mismo libro.');
-            continue;
+            throw new Error('El respaldo contiene una sesión activa, pero ya existe otra sesión activa en la biblioteca. Finaliza o descarta la sesión actual antes de importar.');
           }
           await tx.runAsync(
             `INSERT INTO sesiones_lectura
-              (libro_uuid, fecha, hora_inicio, hora_fin, paginas_leidas, pagina_inicio, pagina_fin, duracion_segundos)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-            session.libro_uuid, session.fecha, session.hora_inicio, session.hora_fin,
-            session.paginas_leidas, session.pagina_inicio, session.pagina_fin, session.duracion_segundos
+              (uuid, libro_uuid, fecha, hora_inicio, hora_fin, paginas_leidas, pagina_inicio,
+               pagina_fin, duracion_segundos, estado, origen, nota, duracion_acumulada_segundos,
+               ultimo_inicio, pausada_en, fecha_creacion, fecha_actualizacion, editada)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            session.uuid, session.libro_uuid, session.fecha, session.hora_inicio, session.hora_fin,
+            session.paginas_leidas, session.pagina_inicio, session.pagina_fin, session.duracion_segundos,
+            session.estado, session.origen, session.nota, session.duracion_acumulada_segundos,
+            session.ultimo_inicio, session.pausada_en, session.fecha_creacion, session.fecha_actualizacion,
+            session.editada
           );
           result.sesiones_lectura.creados += 1;
         }

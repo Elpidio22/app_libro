@@ -301,24 +301,40 @@ describe('integridad de database.js', () => {
     });
   });
 
-  test('exporta un backup versión 6 con todas las entidades relacionadas', async () => {
+  test('exporta un backup versión 7 con campos actuales de libros y sesiones', async () => {
     const { database } = loadSubject();
     await database.inicializarBaseDeDatos();
     const bookId = await database.insertarLibro({
       titulo: 'Libro respaldado', autor: 'Autora', paginas_totales: 180,
-      pagina_actual: 12, estado: 'leyendo',
+      pagina_actual: 12, estado: 'leyendo', fecha_inicio_lectura: '2026-07-01',
     });
     const book = await database.obtenerLibroPorId(bookId);
     await database.addDeseo({ titulo: 'Deseo respaldado', prioridad: 'alta' });
     const etiqueta = await database.crearEtiqueta('Favoritos');
     await database.asignarEtiquetaALibro(book.uuid, etiqueta.uuid);
-    await database.iniciarSesionLectura(book.uuid, 12);
+    const db = await database.getDatabase();
+    await db.runAsync(
+      `INSERT INTO sesiones_lectura
+        (uuid, libro_uuid, fecha, hora_inicio, hora_fin, paginas_leidas, pagina_inicio,
+         pagina_fin, duracion_segundos, estado, origen, nota, duracion_acumulada_segundos,
+         ultimo_inicio, pausada_en, fecha_creacion, fecha_actualizacion, editada)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      'ses-export-active-0001', book.uuid, '2026-07-10', '2026-07-10T10:00:00.000Z',
+      null, 0, 12, null, null, 'activa', 'cronometro', 'En pausa',
+      930, '2026-07-10T10:10:00.000Z', '2026-07-10T10:25:30.000Z',
+      '2026-07-10T10:00:00.000Z', '2026-07-10T10:25:30.000Z', 1
+    );
 
     const documento = await database.crearDocumentoBackupJSON();
     const backup = JSON.parse(documento.contenido);
 
-    expect(backup).toMatchObject({ tipo: 'mi-biblioteca-backup', version: 6 });
-    expect(backup.libros).toEqual([expect.objectContaining({ uuid: book.uuid })]);
+    expect(backup).toMatchObject({ tipo: 'mi-biblioteca-backup', version: 7 });
+    expect(backup.libros).toEqual([expect.objectContaining({
+      uuid: book.uuid,
+      fecha_inicio_lectura: '2026-07-01',
+      fecha_fin: null,
+      portada_base64: null,
+    })]);
     expect(backup.lista_compras).toEqual([expect.objectContaining({ titulo: 'Deseo respaldado' })]);
     expect(backup.etiquetas).toEqual([expect.objectContaining({ uuid: etiqueta.uuid, nombre: 'Favoritos' })]);
     expect(backup.libro_etiquetas).toEqual([
@@ -326,12 +342,19 @@ describe('integridad de database.js', () => {
     ]);
     expect(backup.sesiones_lectura).toEqual([
       expect.objectContaining({
+        uuid: 'ses-export-active-0001',
         libro_uuid: book.uuid,
+        estado: 'activa',
+        origen: 'cronometro',
+        nota: 'En pausa',
         hora_fin: null,
         paginas_leidas: 0,
         pagina_inicio: 12,
         pagina_fin: null,
         duracion_segundos: null,
+        duracion_acumulada_segundos: 930,
+        pausada_en: '2026-07-10T10:25:30.000Z',
+        editada: 1,
       }),
     ]);
   });
