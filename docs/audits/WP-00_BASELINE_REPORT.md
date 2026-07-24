@@ -1,18 +1,22 @@
 # WP-00 Baseline Report
 
-Fecha: 2026-07-23
+Fecha WP-00: 2026-07-23
 
 Rama inicial: feature/reading-sessions-and-book-detail
 
-Rama final esperada: feature/reading-sessions-and-book-detail
+Rama final real: feature/reading-sessions-and-book-detail
 
 HEAD inicial: 72b75d6 feat: agregar resumenes de lectura en Cronicas
 
-Commit funcional creado: 67ce80c feat: consolidar sesiones de lectura y centro del libro
+Commit funcional: 67ce80c feat: consolidar sesiones de lectura y centro del libro
 
-Commit documental: contiene este reporte y la auditoria integral previa.
+Commit documental: 6fff1ae docs: registrar baseline de WP-00
 
-## Archivos incluidos
+Push: completado a origin/feature/reading-sessions-and-book-detail
+
+Estado final: arbol limpio y rama sincronizada con su upstream origin/feature/reading-sessions-and-book-detail.
+
+## Archivos incluidos en WP-00
 
 - __tests__/analytics-repository.test.js
 - __tests__/cronicas-dashboard.test.js
@@ -30,9 +34,17 @@ Commit documental: contiene este reporte y la auditoria integral previa.
 - docs/audits/APP_AUDIT_REPORT.md
 - docs/audits/WP-00_BASELINE_REPORT.md
 
-## Archivos excluidos
+## Verificaciones de WP-00
 
-No se excluyeron cambios pendientes relacionados. No se incluyeron bases SQLite, backups reales, portadas personales, APK/AAB, keystores, credenciales, node_modules ni carpetas de build.
+Tests: `npm test -- --runInBand` aprobado.
+
+Resultado real: 11 suites aprobadas, 156 tests aprobados, 0 snapshots.
+
+Lint: `npm run lint` aprobado.
+
+Resultado real: `expo lint` sin errores.
+
+Whitespace: `git diff --check` aprobado. Git informo solo advertencias locales de normalizacion LF a CRLF.
 
 ## Stashes
 
@@ -41,24 +53,18 @@ Intactos, solo lectura:
 - stash@{0}: On main: wip: bloque generado por Expo CLI en main
 - stash@{1}: On fix/isbn-rate-limits: wip: experimento scanner ISBN pendiente
 
-## Verificaciones
+## Confirmaciones
 
-Tests: `npm test -- --runInBand` paso correctamente.
+Produccion, Preview, bases SQLite, backups, portadas reales y stashes no fueron modificados.
 
-Resultado real: 11 suites passed, 156 tests passed, 0 snapshots.
+No se uso ADB, no se abrio Produccion, no se limpio ningun package, no se genero APK/AAB y no se ejecuto ningun build nativo.
 
-Lint: `npm run lint` paso correctamente.
+No se incluyeron bases SQLite, backups reales, portadas personales, APK/AAB, keystores, credenciales, node_modules ni carpetas de build.
 
-Resultado real: `expo lint` sin errores.
+`APP_AUDIT_REPORT.md` conserva el estado historico anterior al cierre de WP-00. Su seccion de Git ya no representa el estado vigente posterior a los commits `67ce80c` y `6fff1ae` ni al push de la rama.
 
-Whitespace: `git diff --check` paso sin errores de whitespace. Git informo solo advertencias locales de normalizacion LF a CRLF.
+## Riesgos y diferencias
 
-## Estado y riesgos
+WP-00 preservo el estado actual y no corrigio problemas funcionales, visuales, de datos ni de arquitectura.
 
-Estado previo observado: rama de trabajo distinta de main, remoto `https://github.com/Elpidio22/app_libro.git`, stashes intactos, cambios acotados a sesiones de lectura, centro del libro, Cronicas, Biblioteca y pruebas relacionadas.
-
-Diferencia respecto de la auditoria anterior: `docs/audits/APP_AUDIT_REPORT.md` estaba no rastreado y se conserva como documento de auditoria previa.
-
-Produccion, Preview, bases SQLite, backups, portadas reales y stashes no fueron modificados. No se uso ADB, no se abrio Produccion, no se limpio ningun package, no se genero APK/AAB y no se ejecuto ningun build nativo.
-
-Push: pendiente al momento de crear este archivo; el resultado final se informa en la salida de WP-00.
+Los riesgos documentados en la auditoria historica siguen abiertos para paquetes posteriores de estabilizacion.
