@@ -190,17 +190,45 @@ async function crearFixtureHistorico(db, version) {
     `);
   }
 
+  if (version >= 7) {
+    await db.execAsync(`
+      ALTER TABLE mis_libros ADD COLUMN fecha_inicio_lectura TEXT NULL;
+      ALTER TABLE sesiones_lectura ADD COLUMN uuid TEXT NULL;
+      ALTER TABLE sesiones_lectura ADD COLUMN estado TEXT NOT NULL DEFAULT 'completada';
+      ALTER TABLE sesiones_lectura ADD COLUMN origen TEXT NOT NULL DEFAULT 'cronometro';
+      ALTER TABLE sesiones_lectura ADD COLUMN nota TEXT NULL;
+      ALTER TABLE sesiones_lectura ADD COLUMN duracion_acumulada_segundos INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE sesiones_lectura ADD COLUMN ultimo_inicio TEXT NULL;
+      ALTER TABLE sesiones_lectura ADD COLUMN pausada_en TEXT NULL;
+      ALTER TABLE sesiones_lectura ADD COLUMN fecha_creacion TEXT NULL;
+      ALTER TABLE sesiones_lectura ADD COLUMN fecha_actualizacion TEXT NULL;
+      ALTER TABLE sesiones_lectura ADD COLUMN editada INTEGER NOT NULL DEFAULT 0;
+      UPDATE sesiones_lectura
+      SET uuid = 'ses-historico-0001',
+          estado = 'completada',
+          origen = 'cronometro',
+          duracion_acumulada_segundos = 1800,
+          fecha_creacion = hora_inicio,
+          fecha_actualizacion = hora_fin;
+      CREATE UNIQUE INDEX idx_sesiones_uuid ON sesiones_lectura(uuid);
+      CREATE UNIQUE INDEX idx_sesion_activa_global
+      ON sesiones_lectura(estado) WHERE estado = 'activa';
+      CREATE INDEX idx_sesiones_libro_estado_fecha
+      ON sesiones_lectura(libro_uuid, estado, fecha DESC);
+    `);
+  }
+
   await db.execAsync(`PRAGMA user_version = ${version};`);
 }
 
 describe('integridad de database.js', () => {
-  test('inicializa una base limpia hasta versión 7 y repetir no cambia el estado', async () => {
+  test('inicializa una base limpia hasta versión 8 y repetir no cambia el estado', async () => {
     const { database } = loadSubject();
 
     const db = await database.inicializarBaseDeDatos();
     const primero = await snapshotSemantico(db);
 
-    expect(primero.version).toBe(7);
+    expect(primero.version).toBe(8);
     expect(primero.tablas.map((item) => item.name)).toEqual(expect.arrayContaining([
       'mis_libros', 'lista_compras', 'etiquetas', 'libro_etiquetas', 'mis_libros_fts', 'sesiones_lectura',
     ]));
@@ -211,8 +239,8 @@ describe('integridad de database.js', () => {
     await expect(snapshotSemantico(db)).resolves.toEqual(primero);
   });
 
-  test('migra fixtures históricos 1 a 6 hasta versión 7 conservando datos e integridad', async () => {
-    for (const version of [1, 2, 3, 4, 5, 6]) {
+  test('migra fixtures históricos 1 a 7 hasta versión 8 conservando datos e integridad', async () => {
+    for (const version of [1, 2, 3, 4, 5, 6, 7]) {
       jest.resetModules();
       const sqlite = require('expo-sqlite');
       sqlite.__reset();
@@ -224,7 +252,7 @@ describe('integridad de database.js', () => {
       await database.inicializarBaseDeDatos();
 
       const despues = await snapshotSemantico(dbHistorica);
-      expect(despues.version).toBe(7);
+      expect(despues.version).toBe(8);
       expect(despues.filas.mis_libros[0]).toMatchObject({
         titulo: `Libro v${version}`,
         uuid: version >= 2 ? 'book-historico-0001' : expect.any(String),
@@ -241,7 +269,7 @@ describe('integridad de database.js', () => {
       if (version >= 4) {
         expect(despues.filas.sesiones_lectura[0]).toMatchObject({
           libro_uuid: 'book-historico-0001',
-          uuid: expect.stringMatching(/^ses-/),
+          uuid: version >= 7 ? 'ses-historico-0001' : expect.stringMatching(/^ses-/),
           estado: 'completada',
           origen: 'cronometro',
         });
@@ -265,7 +293,7 @@ describe('integridad de database.js', () => {
     await expect(snapshotSemantico(db)).resolves.toEqual(antes);
     await expect(database.inicializarBaseDeDatos()).resolves.toBe(db);
     const despues = await snapshotSemantico(db);
-    expect(despues.version).toBe(7);
+    expect(despues.version).toBe(8);
     expect(despues.tablas.map((item) => item.name)).toContain('mis_libros');
     await expectIntegridad(db);
   });
@@ -281,14 +309,14 @@ describe('integridad de database.js', () => {
 
     await expect(database.inicializarBaseDeDatos({
       onMigrationCheckpoint: async (name) => {
-        if (name === 'after-v7') throw new Error('fallo simulado final');
+        if (name === 'after-v8') throw new Error('fallo simulado final');
       },
     })).rejects.toThrow(/fallo simulado final/i);
 
     await expect(snapshotSemantico(dbV5)).resolves.toEqual(antes);
     await database.inicializarBaseDeDatos();
     const despues = await snapshotSemantico(dbV5);
-    expect(despues.version).toBe(7);
+    expect(despues.version).toBe(8);
     expect(despues.filas.mis_libros[0].titulo).toBe('Libro v5');
     expect(despues.filas.sesiones_lectura[0]).toMatchObject({
       estado: 'completada',
@@ -323,6 +351,12 @@ describe('integridad de database.js', () => {
     sqlite.__reset();
     const dbV5 = await sqlite.openDatabaseAsync('biblioteca.db');
     await dbV5.execAsync(`
+      CREATE TABLE mis_libros (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, isbn TEXT UNIQUE, titulo TEXT NOT NULL,
+        autor TEXT, portada_url TEXT, paginas_totales INTEGER, pagina_actual INTEGER DEFAULT 0,
+        estado TEXT DEFAULT 'quiero leer', calificacion INTEGER, notas TEXT,
+        fecha_agregado DATETIME DEFAULT CURRENT_TIMESTAMP, fecha_fin DATE, uuid TEXT UNIQUE
+      );
       CREATE TABLE lista_compras (
         id INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT UNIQUE, titulo TEXT NOT NULL,
         autor TEXT, prioridad TEXT, precio_estimado REAL, fecha_agregado TEXT
@@ -331,8 +365,27 @@ describe('integridad de database.js', () => {
         id INTEGER PRIMARY KEY AUTOINCREMENT, libro_uuid TEXT NOT NULL, fecha TEXT NOT NULL,
         hora_inicio TEXT NOT NULL, hora_fin TEXT, paginas_leidas INTEGER NOT NULL DEFAULT 0
       );
+      CREATE TABLE etiquetas (
+        uuid TEXT PRIMARY KEY,
+        nombre TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        fecha_creacion DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE TABLE libro_etiquetas (
+        libro_uuid TEXT NOT NULL,
+        etiqueta_uuid TEXT NOT NULL,
+        PRIMARY KEY (libro_uuid, etiqueta_uuid),
+        FOREIGN KEY (libro_uuid) REFERENCES mis_libros(uuid) ON DELETE CASCADE,
+        FOREIGN KEY (etiqueta_uuid) REFERENCES etiquetas(uuid) ON DELETE CASCADE
+      );
       INSERT INTO lista_compras (uuid, titulo, prioridad, fecha_agregado)
       VALUES ('wishlist-legacy-0001', 'Deseo histórico', 'media', '2026-01-01T00:00:00.000Z');
+      INSERT INTO mis_libros (uuid, titulo, estado, pagina_actual)
+      VALUES
+        ('book-legacy-00001', 'Libro legado 1', 'leyendo', 0),
+        ('book-legacy-00002', 'Libro legado 2', 'leyendo', 0),
+        ('book-legacy-00003', 'Libro legado 3', 'leyendo', 0),
+        ('book-legacy-open1', 'Libro legado 4', 'leyendo', 0),
+        ('book-legacy-open2', 'Libro legado 5', 'leyendo', 0);
       INSERT INTO sesiones_lectura (libro_uuid, fecha, hora_inicio, hora_fin, paginas_leidas)
       VALUES
         ('book-legacy-00001', '2026-01-02', '2026-01-02T10:00:00.000Z', '2026-01-02T10:30:00.000Z', 20),
@@ -349,7 +402,7 @@ describe('integridad de database.js', () => {
     const version = await dbV5.getFirstAsync('PRAGMA user_version');
     const sesiones = await dbV5.getAllAsync('SELECT * FROM sesiones_lectura ORDER BY id');
     const deseo = await dbV5.getFirstAsync('SELECT * FROM lista_compras');
-    expect(version.user_version).toBe(7);
+    expect(version.user_version).toBe(8);
     expect(sesiones[0]).toMatchObject({
       paginas_leidas: 20,
       pagina_inicio: null,
@@ -378,7 +431,7 @@ describe('integridad de database.js', () => {
     expect(deseo).toMatchObject({ estado: 'activo', fecha_resolucion: null, libro_uuid_adquirido: null });
   });
 
-  test('aplica migraciones hasta user_version 7 y crea sesiones, etiquetas, FTS5 e índices', async () => {
+  test('aplica migraciones hasta user_version 8 y crea sesiones, etiquetas, FTS5 e índices', async () => {
     const { database, sqlite } = loadSubject();
 
     await database.inicializarBaseDeDatos();
@@ -387,7 +440,7 @@ describe('integridad de database.js', () => {
     expect(sqlite.openDatabaseAsync).toHaveBeenCalledWith('biblioteca.db', {
       finalizeUnusedStatementsBeforeClosing: false,
     });
-    expect(state.userVersion).toBe(7);
+    expect(state.userVersion).toBe(8);
     expect([...state.tables]).toEqual(expect.arrayContaining([
       'mis_libros',
       'lista_compras',
@@ -428,7 +481,70 @@ describe('integridad de database.js', () => {
     ]));
 
     await database.inicializarBaseDeDatos();
-    expect(sqlite.__getState().userVersion).toBe(7);
+    expect(sqlite.__getState().userVersion).toBe(8);
+  });
+
+  test('schema v8 blinda campos obligatorios con NOT NULL, CHECK y UNIQUE', async () => {
+    const { database } = loadSubject();
+    await database.inicializarBaseDeDatos();
+    const db = await database.getDatabase();
+
+    const libros = await db.getAllAsync('PRAGMA table_info(mis_libros)');
+    const deseos = await db.getAllAsync('PRAGMA table_info(lista_compras)');
+    const sesiones = await db.getAllAsync('PRAGMA table_info(sesiones_lectura)');
+    const porNombre = (columnas) => Object.fromEntries(columnas.map((columna) => [columna.name, columna]));
+
+    expect(porNombre(libros).uuid.notnull).toBe(1);
+    expect(porNombre(libros).estado.notnull).toBe(1);
+    expect(porNombre(libros).pagina_actual.notnull).toBe(1);
+    expect(porNombre(deseos).uuid.notnull).toBe(1);
+    expect(porNombre(deseos).estado.notnull).toBe(1);
+    expect(porNombre(sesiones).uuid.notnull).toBe(1);
+    expect(porNombre(sesiones).libro_uuid.notnull).toBe(1);
+    expect(porNombre(sesiones).estado.notnull).toBe(1);
+    expect(porNombre(sesiones).origen.notnull).toBe(1);
+
+    const bookId = await database.insertarLibro({ titulo: 'Protegido', estado: 'leyendo', pagina_actual: 0 });
+    const book = await database.obtenerLibroPorId(bookId);
+    await expect(db.runAsync(
+      `INSERT INTO mis_libros (uuid, titulo, estado, pagina_actual)
+       VALUES (?, ?, ?, ?)`,
+      book.uuid, 'Duplicado', 'leyendo', 0
+    )).rejects.toThrow(/UNIQUE/i);
+    await expect(db.runAsync(
+      `INSERT INTO mis_libros (uuid, titulo, estado, pagina_actual)
+       VALUES (?, ?, ?, ?)`,
+      'book-invalid-state-0001', 'Estado invÃ¡lido', 'archivado', 0
+    )).rejects.toThrow(/CHECK/i);
+    await expect(db.runAsync(
+      `INSERT INTO sesiones_lectura (uuid, libro_uuid, fecha, hora_inicio, paginas_leidas, estado, origen)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      'ses-invalid-state-0001', book.uuid, '2026-07-01', '2026-07-01T10:00:00.000Z',
+      1, 'cerrada', 'manual'
+    )).rejects.toThrow(/CHECK/i);
+    await expect(db.runAsync(
+      `INSERT INTO sesiones_lectura (uuid, libro_uuid, fecha, hora_inicio, paginas_leidas, estado, origen)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      'ses-orphan-00000001', 'book-missing-000001', '2026-07-01',
+      '2026-07-01T10:00:00.000Z', 1, 'completada', 'manual'
+    )).rejects.toThrow(/FOREIGN KEY/i);
+  });
+
+  test('migraciÃ³n v8 rechaza datos histÃ³ricos incompatibles sin subir user_version', async () => {
+    jest.resetModules();
+    const sqlite = require('expo-sqlite');
+    sqlite.__reset();
+    const dbV7 = await sqlite.openDatabaseAsync('biblioteca.db');
+    await crearFixtureHistorico(dbV7, 7);
+    await dbV7.runAsync("UPDATE sesiones_lectura SET estado = 'cerrada' WHERE id = 1");
+    const antes = await snapshotSemantico(dbV7);
+    const database = require('../src/database');
+
+    await expect(database.inicializarBaseDeDatos()).rejects.toThrow(/sesiones.*estados inv/i);
+
+    await expect(snapshotSemantico(dbV7)).resolves.toEqual(antes);
+    const version = await dbV7.getFirstAsync('PRAGMA user_version');
+    expect(version.user_version).toBe(7);
   });
 
   test('registra una sesión, calcula páginas y expone métricas mensuales reales', async () => {
@@ -471,8 +587,9 @@ describe('integridad de database.js', () => {
       const db = await database.getDatabase();
       await expect(db.runAsync(
         `INSERT INTO sesiones_lectura
-          (libro_uuid, fecha, hora_inicio, hora_fin, paginas_leidas)
-         VALUES (?, ?, ?, ?, ?)`,
+          (uuid, libro_uuid, fecha, hora_inicio, hora_fin, paginas_leidas)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        'ses-duplicate-hora01',
         book.uuid,
         active.fecha,
         active.hora_inicio,

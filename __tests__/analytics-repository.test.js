@@ -21,11 +21,13 @@ async function insertarSesion(db, {
   paginaFin = paginas,
   duracion,
 }) {
+  const uuid = `ses-test-${String(inicio || fecha).replace(/[^0-9]/g, '').slice(0, 24)}`;
   await db.runAsync(
     `INSERT INTO sesiones_lectura
-      (libro_uuid, fecha, hora_inicio, hora_fin, paginas_leidas,
+      (uuid, libro_uuid, fecha, hora_inicio, hora_fin, paginas_leidas,
        pagina_inicio, pagina_fin, duracion_segundos)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    uuid,
     libroUuid,
     fecha,
     inicio,

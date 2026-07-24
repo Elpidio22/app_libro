@@ -33,8 +33,11 @@ import {
 
 const DATABASE_NAME = 'biblioteca.db';
 const BACKUP_VERSION = 7;
-const DATABASE_VERSION = 7;
+const DATABASE_VERSION = 8;
 const ESTADOS_VALIDOS = ['quiero leer', 'leyendo', 'terminado', 'abandonado'];
+const ESTADOS_DESEO_VALIDOS = ['activo', 'adquirido', 'descartado'];
+const ESTADOS_SESION_VALIDOS = Object.values(SESSION_STATES);
+const ORIGENES_SESION_VALIDOS = ['cronometro', 'manual'];
 
 let databasePromise;
 
@@ -121,6 +124,228 @@ async function ejecutarCheckpointMigracion(options, name, context) {
   if (typeof options?.onMigrationCheckpoint === 'function') {
     await options.onMigrationCheckpoint(name, context);
   }
+}
+
+function listaSQL(valores) {
+  return valores.map((valor) => `'${String(valor).replace(/'/g, "''")}'`).join(', ');
+}
+
+async function asegurarSinFilas(db, sql, mensaje) {
+  const row = await db.getFirstAsync(sql);
+  if (Number(row?.total) > 0) throw new Error(mensaje);
+}
+
+async function validarDatosParaEsquemaV8(db) {
+  const mensajes = {
+    librosUuid: 'La base contiene libros con identificadores invÃ¡lidos. No se aplicÃ³ la migraciÃ³n del esquema.',
+    librosEstado: 'La base contiene libros con estados invÃ¡lidos. No se aplicÃ³ la migraciÃ³n del esquema.',
+    librosDuplicados: 'La base contiene libros duplicados por identificador. No se aplicÃ³ la migraciÃ³n del esquema.',
+    deseosUuid: 'La lista de deseos contiene identificadores invÃ¡lidos. No se aplicÃ³ la migraciÃ³n del esquema.',
+    deseosEstado: 'La lista de deseos contiene estados invÃ¡lidos. No se aplicÃ³ la migraciÃ³n del esquema.',
+    deseosDuplicados: 'La lista de deseos contiene duplicados por identificador. No se aplicÃ³ la migraciÃ³n del esquema.',
+    etiquetasUuid: 'La base contiene etiquetas con identificadores invÃ¡lidos. No se aplicÃ³ la migraciÃ³n del esquema.',
+    etiquetasNombre: 'La base contiene etiquetas sin nombre. No se aplicÃ³ la migraciÃ³n del esquema.',
+    sesionesUuid: 'La base contiene sesiones con identificadores invÃ¡lidos. No se aplicÃ³ la migraciÃ³n del esquema.',
+    sesionesEstado: 'La base contiene sesiones con estados invÃ¡lidos. No se aplicÃ³ la migraciÃ³n del esquema.',
+    sesionesOrigen: 'La base contiene sesiones con origen invÃ¡lido. No se aplicÃ³ la migraciÃ³n del esquema.',
+    sesionesLibro: 'La base contiene sesiones huÃ©rfanas. No se aplicÃ³ la migraciÃ³n del esquema.',
+    relaciones: 'La base contiene relaciones de etiquetas huÃ©rfanas. No se aplicÃ³ la migraciÃ³n del esquema.',
+    sesionesDuplicadas: 'La base contiene sesiones duplicadas por identificador. No se aplicÃ³ la migraciÃ³n del esquema.',
+  };
+  await asegurarSinFilas(db, "SELECT COUNT(*) AS total FROM mis_libros WHERE uuid IS NULL OR trim(uuid) = ''", mensajes.librosUuid);
+  await asegurarSinFilas(db, `SELECT COUNT(*) AS total FROM mis_libros WHERE estado IS NULL OR estado NOT IN (${listaSQL(ESTADOS_VALIDOS)})`, mensajes.librosEstado);
+  await asegurarSinFilas(db, `SELECT COUNT(*) AS total FROM (SELECT uuid FROM mis_libros GROUP BY uuid HAVING COUNT(*) > 1)`, mensajes.librosDuplicados);
+  await asegurarSinFilas(db, "SELECT COUNT(*) AS total FROM lista_compras WHERE uuid IS NULL OR trim(uuid) = ''", mensajes.deseosUuid);
+  await asegurarSinFilas(db, `SELECT COUNT(*) AS total FROM lista_compras WHERE estado IS NULL OR estado NOT IN (${listaSQL(ESTADOS_DESEO_VALIDOS)})`, mensajes.deseosEstado);
+  await asegurarSinFilas(db, `SELECT COUNT(*) AS total FROM (SELECT uuid FROM lista_compras GROUP BY uuid HAVING COUNT(*) > 1)`, mensajes.deseosDuplicados);
+  await asegurarSinFilas(db, "SELECT COUNT(*) AS total FROM etiquetas WHERE uuid IS NULL OR trim(uuid) = ''", mensajes.etiquetasUuid);
+  await asegurarSinFilas(db, "SELECT COUNT(*) AS total FROM etiquetas WHERE nombre IS NULL OR trim(nombre) = ''", mensajes.etiquetasNombre);
+  await asegurarSinFilas(db, "SELECT COUNT(*) AS total FROM sesiones_lectura WHERE uuid IS NULL OR trim(uuid) = ''", mensajes.sesionesUuid);
+  await asegurarSinFilas(db, `SELECT COUNT(*) AS total FROM sesiones_lectura WHERE estado IS NULL OR estado NOT IN (${listaSQL(ESTADOS_SESION_VALIDOS)})`, mensajes.sesionesEstado);
+  await asegurarSinFilas(db, `SELECT COUNT(*) AS total FROM sesiones_lectura WHERE origen IS NULL OR origen NOT IN (${listaSQL(ORIGENES_SESION_VALIDOS)})`, mensajes.sesionesOrigen);
+  await asegurarSinFilas(db, "SELECT COUNT(*) AS total FROM sesiones_lectura s LEFT JOIN mis_libros l ON l.uuid = s.libro_uuid WHERE s.libro_uuid IS NULL OR trim(s.libro_uuid) = '' OR l.uuid IS NULL", mensajes.sesionesLibro);
+  await asegurarSinFilas(db, `SELECT COUNT(*) AS total FROM (SELECT uuid FROM sesiones_lectura GROUP BY uuid HAVING COUNT(*) > 1)`, mensajes.sesionesDuplicadas);
+  await asegurarSinFilas(db, `
+    SELECT COUNT(*) AS total
+    FROM libro_etiquetas le
+    LEFT JOIN mis_libros l ON l.uuid = le.libro_uuid
+    LEFT JOIN etiquetas e ON e.uuid = le.etiqueta_uuid
+    WHERE le.libro_uuid IS NULL OR trim(le.libro_uuid) = ''
+       OR le.etiqueta_uuid IS NULL OR trim(le.etiqueta_uuid) = ''
+       OR l.uuid IS NULL OR e.uuid IS NULL
+  `, mensajes.relaciones);
+}
+
+async function reconstruirEsquemaV8(db) {
+  await db.execAsync(`
+    DROP TRIGGER IF EXISTS mis_libros_fts_insert;
+    DROP TRIGGER IF EXISTS mis_libros_fts_delete;
+    DROP TRIGGER IF EXISTS mis_libros_fts_update;
+    DROP TABLE IF EXISTS mis_libros_fts;
+
+    CREATE TABLE mis_libros_v8 (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      isbn TEXT UNIQUE,
+      titulo TEXT NOT NULL CHECK (length(trim(titulo)) > 0),
+      autor TEXT,
+      portada_url TEXT,
+      paginas_totales INTEGER CHECK (paginas_totales IS NULL OR paginas_totales >= 0),
+      pagina_actual INTEGER NOT NULL DEFAULT 0 CHECK (pagina_actual >= 0),
+      estado TEXT NOT NULL DEFAULT 'quiero leer'
+        CHECK (estado IN ('quiero leer', 'leyendo', 'terminado', 'abandonado')),
+      calificacion INTEGER CHECK (calificacion IS NULL OR calificacion BETWEEN 1 AND 5),
+      notas TEXT,
+      fecha_agregado DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      fecha_fin DATE,
+      uuid TEXT NOT NULL UNIQUE CHECK (length(trim(uuid)) > 0),
+      fecha_inicio_lectura TEXT NULL
+    );
+
+    CREATE TABLE lista_compras_v8 (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      titulo TEXT NOT NULL CHECK (length(trim(titulo)) > 0),
+      autor TEXT,
+      prioridad TEXT NOT NULL DEFAULT 'media'
+        CHECK (prioridad IN ('alta', 'media', 'baja')),
+      precio_estimado REAL,
+      fecha_agregado TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      uuid TEXT NOT NULL UNIQUE CHECK (length(trim(uuid)) > 0),
+      estado TEXT NOT NULL DEFAULT 'activo'
+        CHECK (estado IN ('activo', 'adquirido', 'descartado')),
+      fecha_resolucion TEXT NULL,
+      libro_uuid_adquirido TEXT NULL
+    );
+
+    CREATE TABLE etiquetas_v8 (
+      uuid TEXT NOT NULL PRIMARY KEY CHECK (length(trim(uuid)) > 0),
+      nombre TEXT NOT NULL CHECK (length(trim(nombre)) > 0) COLLATE NOCASE UNIQUE,
+      fecha_creacion DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE libro_etiquetas_v8 (
+      libro_uuid TEXT NOT NULL CHECK (length(trim(libro_uuid)) > 0),
+      etiqueta_uuid TEXT NOT NULL CHECK (length(trim(etiqueta_uuid)) > 0),
+      PRIMARY KEY (libro_uuid, etiqueta_uuid),
+      FOREIGN KEY (libro_uuid) REFERENCES mis_libros_v8(uuid) ON DELETE CASCADE,
+      FOREIGN KEY (etiqueta_uuid) REFERENCES etiquetas_v8(uuid) ON DELETE CASCADE
+    );
+
+    CREATE TABLE sesiones_lectura_v8 (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      libro_uuid TEXT NOT NULL CHECK (length(trim(libro_uuid)) > 0),
+      fecha TEXT NOT NULL CHECK (length(trim(fecha)) > 0),
+      hora_inicio TEXT NOT NULL CHECK (length(trim(hora_inicio)) > 0),
+      hora_fin TEXT,
+      paginas_leidas INTEGER NOT NULL DEFAULT 0 CHECK (paginas_leidas >= 0),
+      pagina_inicio INTEGER NULL CHECK (pagina_inicio IS NULL OR pagina_inicio >= 0),
+      pagina_fin INTEGER NULL CHECK (pagina_fin IS NULL OR pagina_fin >= 0),
+      duracion_segundos INTEGER NULL CHECK (duracion_segundos IS NULL OR duracion_segundos >= 0),
+      uuid TEXT NOT NULL UNIQUE CHECK (length(trim(uuid)) > 0),
+      estado TEXT NOT NULL DEFAULT 'completada'
+        CHECK (estado IN ('activa', 'pendiente', 'completada')),
+      origen TEXT NOT NULL DEFAULT 'cronometro'
+        CHECK (origen IN ('cronometro', 'manual')),
+      nota TEXT NULL,
+      duracion_acumulada_segundos INTEGER NOT NULL DEFAULT 0 CHECK (duracion_acumulada_segundos >= 0),
+      ultimo_inicio TEXT NULL,
+      pausada_en TEXT NULL,
+      fecha_creacion TEXT NULL,
+      fecha_actualizacion TEXT NULL,
+      editada INTEGER NOT NULL DEFAULT 0 CHECK (editada IN (0, 1)),
+      FOREIGN KEY (libro_uuid) REFERENCES mis_libros_v8(uuid) ON DELETE CASCADE
+    );
+
+    INSERT INTO mis_libros_v8
+      (id, isbn, titulo, autor, portada_url, paginas_totales, pagina_actual, estado,
+       calificacion, notas, fecha_agregado, fecha_fin, uuid, fecha_inicio_lectura)
+    SELECT id, isbn, titulo, autor, portada_url, paginas_totales, COALESCE(pagina_actual, 0),
+       estado, calificacion, notas, COALESCE(fecha_agregado, CURRENT_TIMESTAMP),
+       fecha_fin, uuid, fecha_inicio_lectura
+    FROM mis_libros;
+
+    INSERT INTO lista_compras_v8
+      (id, titulo, autor, prioridad, precio_estimado, fecha_agregado, uuid, estado,
+       fecha_resolucion, libro_uuid_adquirido)
+    SELECT id, titulo, autor, prioridad, precio_estimado, COALESCE(fecha_agregado, CURRENT_TIMESTAMP),
+       uuid, estado, fecha_resolucion, libro_uuid_adquirido
+    FROM lista_compras;
+
+    INSERT INTO etiquetas_v8 (uuid, nombre, fecha_creacion)
+    SELECT uuid, nombre, COALESCE(fecha_creacion, CURRENT_TIMESTAMP)
+    FROM etiquetas;
+
+    INSERT INTO libro_etiquetas_v8 (libro_uuid, etiqueta_uuid)
+    SELECT libro_uuid, etiqueta_uuid
+    FROM libro_etiquetas;
+
+    INSERT INTO sesiones_lectura_v8
+      (id, libro_uuid, fecha, hora_inicio, hora_fin, paginas_leidas, pagina_inicio,
+       pagina_fin, duracion_segundos, uuid, estado, origen, nota,
+       duracion_acumulada_segundos, ultimo_inicio, pausada_en, fecha_creacion,
+       fecha_actualizacion, editada)
+    SELECT id, libro_uuid, fecha, hora_inicio, hora_fin, COALESCE(paginas_leidas, 0),
+       pagina_inicio, pagina_fin, duracion_segundos, uuid, estado, origen, nota,
+       COALESCE(duracion_acumulada_segundos, 0), ultimo_inicio, pausada_en,
+       fecha_creacion, fecha_actualizacion, COALESCE(editada, 0)
+    FROM sesiones_lectura;
+
+    DROP TABLE libro_etiquetas;
+    DROP TABLE sesiones_lectura;
+    DROP TABLE etiquetas;
+    DROP TABLE lista_compras;
+    DROP TABLE mis_libros;
+
+    ALTER TABLE mis_libros_v8 RENAME TO mis_libros;
+    ALTER TABLE lista_compras_v8 RENAME TO lista_compras;
+    ALTER TABLE etiquetas_v8 RENAME TO etiquetas;
+    ALTER TABLE libro_etiquetas_v8 RENAME TO libro_etiquetas;
+    ALTER TABLE sesiones_lectura_v8 RENAME TO sesiones_lectura;
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_mis_libros_uuid ON mis_libros(uuid);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_lista_compras_uuid ON lista_compras(uuid);
+    CREATE INDEX IF NOT EXISTS idx_mis_libros_estado ON mis_libros(estado);
+    CREATE INDEX IF NOT EXISTS idx_mis_libros_fecha_fin ON mis_libros(fecha_fin);
+    CREATE INDEX IF NOT EXISTS idx_libro_etiquetas_etiqueta ON libro_etiquetas(etiqueta_uuid);
+    CREATE INDEX IF NOT EXISTS idx_sesiones_fecha ON sesiones_lectura(fecha);
+    CREATE INDEX IF NOT EXISTS idx_sesiones_libro ON sesiones_lectura(libro_uuid);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_sesion_activa_por_libro
+      ON sesiones_lectura(libro_uuid) WHERE estado = 'activa';
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_sesiones_libro_hora_inicio
+      ON sesiones_lectura(libro_uuid, hora_inicio);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_sesiones_uuid ON sesiones_lectura(uuid);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_sesion_activa_global
+      ON sesiones_lectura(estado) WHERE estado = 'activa';
+    CREATE INDEX IF NOT EXISTS idx_sesiones_libro_estado_fecha
+      ON sesiones_lectura(libro_uuid, estado, fecha DESC);
+    CREATE INDEX IF NOT EXISTS idx_lista_compras_estado_fecha
+      ON lista_compras(estado, fecha_agregado);
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS mis_libros_fts USING fts5(
+      titulo,
+      autor,
+      content='mis_libros',
+      content_rowid='id',
+      tokenize='unicode61 remove_diacritics 2'
+    );
+    CREATE TRIGGER IF NOT EXISTS mis_libros_fts_insert
+    AFTER INSERT ON mis_libros BEGIN
+      INSERT INTO mis_libros_fts(rowid, titulo, autor)
+      VALUES (new.id, new.titulo, COALESCE(new.autor, ''));
+    END;
+    CREATE TRIGGER IF NOT EXISTS mis_libros_fts_delete
+    AFTER DELETE ON mis_libros BEGIN
+      INSERT INTO mis_libros_fts(mis_libros_fts, rowid, titulo, autor)
+      VALUES ('delete', old.id, old.titulo, COALESCE(old.autor, ''));
+    END;
+    CREATE TRIGGER IF NOT EXISTS mis_libros_fts_update
+    AFTER UPDATE OF titulo, autor ON mis_libros BEGIN
+      INSERT INTO mis_libros_fts(mis_libros_fts, rowid, titulo, autor)
+      VALUES ('delete', old.id, old.titulo, COALESCE(old.autor, ''));
+      INSERT INTO mis_libros_fts(rowid, titulo, autor)
+      VALUES (new.id, new.titulo, COALESCE(new.autor, ''));
+    END;
+    INSERT INTO mis_libros_fts(mis_libros_fts) VALUES ('rebuild');
+  `);
 }
 
 export async function inicializarBaseDeDatos(options = {}) {
@@ -377,6 +602,13 @@ export async function inicializarBaseDeDatos(options = {}) {
     `);
     version = 7;
     await ejecutarCheckpointMigracion(options, 'after-v7', { version });
+  }
+
+  if (version < 8) {
+    await validarDatosParaEsquemaV8(migrationDb);
+    await reconstruirEsquemaV8(migrationDb);
+    version = 8;
+    await ejecutarCheckpointMigracion(options, 'after-v8', { version });
   }
 
   await ejecutarCheckpointMigracion(options, 'before-user-version', { version });
