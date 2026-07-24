@@ -10,11 +10,21 @@ HEAD inicial: 72b75d6 feat: agregar resumenes de lectura en Cronicas
 
 Commit funcional: 67ce80c feat: consolidar sesiones de lectura y centro del libro
 
-Commit documental: 6fff1ae docs: registrar baseline de WP-00
+Primer commit documental: 6fff1ae docs: registrar baseline de WP-00
+
+Commit documental final: 47d525f docs: completar cierre de WP-00
 
 Push: completado a origin/feature/reading-sessions-and-book-detail
 
+Punta final local y remota de feature/reading-sessions-and-book-detail: 47d525f9b4ec46ffff28959dbc89713e9a38ab7e.
+
 Estado final: arbol limpio y rama sincronizada con su upstream origin/feature/reading-sessions-and-book-detail.
+
+## Commits de cierre
+
+- 67ce80c: implementacion funcional preservada.
+- 6fff1ae: primer registro documental del baseline.
+- 47d525f: commit documental final que completo el cierre de WP-00.
 
 ## Archivos incluidos en WP-00
 
@@ -61,10 +71,12 @@ No se uso ADB, no se abrio Produccion, no se limpio ningun package, no se genero
 
 No se incluyeron bases SQLite, backups reales, portadas personales, APK/AAB, keystores, credenciales, node_modules ni carpetas de build.
 
-`APP_AUDIT_REPORT.md` conserva el estado historico anterior al cierre de WP-00. Su seccion de Git ya no representa el estado vigente posterior a los commits `67ce80c` y `6fff1ae` ni al push de la rama.
+`APP_AUDIT_REPORT.md` conserva el estado historico anterior al cierre de WP-00. Su seccion de Git ya no representa el estado vigente posterior a los commits `67ce80c`, `6fff1ae` y `47d525f` ni al push de la rama.
 
 ## Riesgos y diferencias
 
 WP-00 preservo el estado actual y no corrigio problemas funcionales, visuales, de datos ni de arquitectura.
 
 Los riesgos documentados en la auditoria historica siguen abiertos para paquetes posteriores de estabilizacion.
+
+Los registros anteriores que terminaban en `6fff1ae` eran correctos en ese momento, pero quedaron incompletos despues del commit documental final `47d525f`.

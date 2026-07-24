@@ -8,6 +8,10 @@ Commit base: 47d525f9b4ec46ffff28959dbc89713e9a38ab7e
 
 Commit funcional: b4cb0d5 fix: restaurar integralmente backups v7
 
+Commit documental: 7637557 docs: registrar resultado de WP-01
+
+Genealogia verificada: WP-01 desciende correctamente del cierre final de WP-00 en `47d525f9b4ec46ffff28959dbc89713e9a38ab7e`.
+
 ## Archivos modificados
 
 - src/database.js
