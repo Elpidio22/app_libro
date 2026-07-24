@@ -23,10 +23,12 @@ import {
 } from './services/backupFileService';
 import {
   calculateReadPages,
+  buildLocalSessionInstant,
   elapsedSessionSeconds,
   normalizeLocalTime,
   normalizeLocalDate,
   SESSION_STATES,
+  validateSessionInstantIsNotFuture,
   validateDurationSeconds,
   validateReadingDates,
 } from './services/readingSessionService';
@@ -1100,13 +1102,16 @@ export async function completarSesionPendiente(id, { paginaInicio, paginaFinal, 
 
 export async function agregarSesionManual(libroUuid, {
   fecha, hora = null, duracionSegundos, paginaInicio, paginaFinal, nota = null, actualizarFechaInicio = false,
+  now = new Date(),
 }) {
-  const fechaNormal = normalizeLocalDate(fecha);
-  if (!fechaNormal) throw new Error('La fecha de la sesión no es válida.');
-  if (fechaNormal > fechaLocalISO()) throw new Error('La fecha de la sesión no puede estar en el futuro.');
-  const ahoraManual = new Date();
-  const horaNormal = hora ? normalizeLocalTime(hora) : ahoraManual.toTimeString().slice(0, 5);
-  if (!horaNormal) throw new Error('La hora de la sesión no es válida.');
+  const ahoraManual = now instanceof Date ? now : new Date(now);
+  if (!Number.isFinite(ahoraManual.getTime())) throw new Error('La hora de la sesión no es válida.');
+  const horaEntrada = hora === null || hora === undefined ? ahoraManual.toTimeString().slice(0, 5) : hora;
+  const { date: fechaNormal, instant: inicioLocal } = buildLocalSessionInstant(fecha, horaEntrada, {
+    seconds: ahoraManual.getSeconds(),
+    milliseconds: ahoraManual.getMilliseconds(),
+  });
+  validateSessionInstantIsNotFuture(inicioLocal, ahoraManual);
   const duracion = validateDurationSeconds(duracionSegundos);
   const db = await getDatabase();
   let resultado;
@@ -1114,9 +1119,6 @@ export async function agregarSesionManual(libroUuid, {
     const libro = await tx.getFirstAsync('SELECT * FROM mis_libros WHERE uuid = ?', String(libroUuid));
     if (!libro) throw new Error('El libro no existe.');
     const paginas = calculateReadPages(paginaInicio, paginaFinal, libro.paginas_totales);
-    const segundosUnicos = `${String(ahoraManual.getSeconds()).padStart(2, '0')}.${String(ahoraManual.getMilliseconds()).padStart(3, '0')}`;
-    const inicioLocal = new Date(`${fechaNormal}T${horaNormal}:${segundosUnicos}`);
-    if (!Number.isFinite(inicioLocal.getTime())) throw new Error('La hora de la sesión no es válida.');
     const horaInicio = inicioLocal.toISOString();
     const horaFin = new Date(Date.parse(horaInicio) + duracion * 1000).toISOString();
     const now = new Date().toISOString();
@@ -1142,10 +1144,12 @@ export async function agregarSesionManual(libroUuid, {
 
 export async function editarSesionLectura(id, {
   fecha, hora = null, duracionSegundos, paginaInicio = null, paginaFinal = null,
-  nota = null, estado = SESSION_STATES.COMPLETED,
+  nota = null, estado = SESSION_STATES.COMPLETED, now = new Date(),
 }) {
   const fechaNormal = normalizeLocalDate(fecha);
-  if (!fechaNormal || fechaNormal > fechaLocalISO()) throw new Error('La fecha de la sesión no es válida.');
+  if (!fechaNormal) throw new Error('La fecha de la sesión no es válida.');
+  const ahoraEdicion = now instanceof Date ? now : new Date(now);
+  if (!Number.isFinite(ahoraEdicion.getTime())) throw new Error('La hora de la sesión no es válida.');
   const duracion = validateDurationSeconds(duracionSegundos);
   const db = await getDatabase();
   let resultado;
@@ -1156,16 +1160,23 @@ export async function editarSesionLectura(id, {
     const pendiente = estado === SESSION_STATES.PENDING;
     const paginas = pendiente ? 0 : calculateReadPages(paginaInicio, paginaFinal, libro?.paginas_totales);
     let horaInicio = sesion.hora_inicio;
-    if (hora) {
+    if (hora !== null && hora !== undefined) {
       const horaNormal = normalizeLocalTime(hora);
       if (!horaNormal) throw new Error('La hora de la sesión no es válida.');
-      const inicioLocal = new Date(`${fechaNormal}T${horaNormal}:00`);
-      if (!Number.isFinite(inicioLocal.getTime())) throw new Error('La hora de la sesión no es válida.');
+      const { instant: inicioLocal } = buildLocalSessionInstant(fechaNormal, horaNormal);
+      validateSessionInstantIsNotFuture(inicioLocal, ahoraEdicion);
       horaInicio = inicioLocal.toISOString();
     } else if (fechaNormal !== sesion.fecha) {
       const original = new Date(sesion.hora_inicio);
       const horaLocal = `${String(original.getHours()).padStart(2, '0')}:${String(original.getMinutes()).padStart(2, '0')}`;
-      horaInicio = new Date(`${fechaNormal}T${horaLocal}:00`).toISOString();
+      const { instant: inicioLocal } = buildLocalSessionInstant(fechaNormal, horaLocal, {
+        seconds: original.getSeconds(),
+        milliseconds: original.getMilliseconds(),
+      });
+      validateSessionInstantIsNotFuture(inicioLocal, ahoraEdicion);
+      horaInicio = inicioLocal.toISOString();
+    } else {
+      validateSessionInstantIsNotFuture(horaInicio, ahoraEdicion);
     }
     const horaFin = new Date(Date.parse(horaInicio) + duracion * 1000).toISOString();
     await tx.runAsync(

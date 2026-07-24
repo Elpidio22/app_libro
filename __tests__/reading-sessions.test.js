@@ -1,9 +1,11 @@
 import {
+  buildLocalSessionInstant,
   calculateReadPages,
   elapsedSessionSeconds,
   normalizeLocalDate,
   normalizeLocalTime,
   readingCalendarDays,
+  validateSessionInstantIsNotFuture,
   validateDurationSeconds,
   validateReadingDates,
 } from '../src/services/readingSessionService';
@@ -17,6 +19,13 @@ function loadSubject() {
   const database = require('../src/database');
   require('../src/database/revisions').resetDatabaseRevisionsForTests();
   return { database, sqlite };
+}
+
+function localInputParts(date) {
+  return {
+    fecha: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`,
+    hora: `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`,
+  };
 }
 
 describe('reglas centrales de sesiones', () => {
@@ -44,6 +53,17 @@ describe('reglas centrales de sesiones', () => {
     expect(elapsedSessionSeconds({
       estado: 'activa', pausada_en: '2026-07-23T11:00:00Z', duracion_acumulada_segundos: 1800,
     }, new Date('2026-07-23T14:00:00Z'))).toBe(1800);
+  });
+  test('valida timestamps locales completos contra now', () => {
+    const now = new Date('2026-07-23T10:30:00.000Z');
+    const exactParts = localInputParts(now);
+    const exact = buildLocalSessionInstant(exactParts.fecha, exactParts.hora).instant;
+    expect(validateSessionInstantIsNotFuture(exact, now).toISOString()).toBe(now.toISOString());
+    const oneSecondFuture = buildLocalSessionInstant(exactParts.fecha, exactParts.hora, { seconds: 1 }).instant;
+    expect(() => validateSessionInstantIsNotFuture(oneSecondFuture, now)).toThrow(/futuro/i);
+    const futureParts = localInputParts(new Date(now.getTime() + 60000));
+    const future = buildLocalSessionInstant(futureParts.fecha, futureParts.hora).instant;
+    expect(() => validateSessionInstantIsNotFuture(future, now)).toThrow(/futuro/i);
   });
 });
 
@@ -160,6 +180,82 @@ describe('sesiones de lectura integradas con SQLite', () => {
     expect(manual).toMatchObject({ libro_uuid: book.uuid, origen: 'manual', paginas_leidas: 10 });
   });
 
+  test('sesión manual acepta fecha pasada, hora pasada del día actual e instante exacto', async () => {
+    const { database, book } = await setupBook();
+    const now = new Date('2026-07-23T10:30:00.000Z');
+    const exact = localInputParts(now);
+    const earlierToday = localInputParts(new Date(now.getTime() - 60 * 60 * 1000));
+    const yesterday = localInputParts(new Date(now.getTime() - 24 * 60 * 60 * 1000));
+
+    const exactSession = await database.agregarSesionManual(book.uuid, {
+      ...exact, now, duracionSegundos: 1800, paginaInicio: 100, paginaFinal: 110, nota: 'Exacta',
+    });
+    await database.agregarSesionManual(book.uuid, {
+      ...earlierToday, now, duracionSegundos: 1200, paginaInicio: 110, paginaFinal: 118, nota: 'Hoy pasada',
+    });
+    await database.agregarSesionManual(book.uuid, {
+      ...yesterday, now, duracionSegundos: 900, paginaInicio: 118, paginaFinal: 124, nota: 'Ayer',
+    });
+    await database.agregarSesionManual(book.uuid, {
+      fecha: '2025-12-31', hora: '23:55', now, duracionSegundos: 600, paginaInicio: 124, paginaFinal: 128,
+    });
+
+    const rows = await database.obtenerSesionesDeLibro(book.uuid);
+    expect(rows).toHaveLength(4);
+    expect(exactSession).toMatchObject({
+      origen: 'manual', estado: 'completada', nota: 'Exacta', paginas_leidas: 10,
+      hora_inicio: now.toISOString(),
+    });
+  });
+
+  test('sesión manual futura se rechaza sin crear filas ni modificar libro', async () => {
+    const { database, book, id } = await setupBook({ pagina_actual: 100, fecha_inicio_lectura: null });
+    const now = new Date('2026-07-23T10:30:59.000Z');
+    const oneSecondFuture = localInputParts(new Date(now.getTime() + 1000));
+    const oneHourFuture = localInputParts(new Date(now.getTime() + 60 * 60 * 1000));
+    const tomorrow = localInputParts(new Date(now.getTime() + 24 * 60 * 60 * 1000));
+    const farFuture = localInputParts(new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000));
+    const beforeBook = await database.obtenerLibroPorId(id);
+
+    for (const parts of [oneSecondFuture, oneHourFuture, tomorrow, farFuture]) {
+      await expect(database.agregarSesionManual(book.uuid, {
+        ...parts, now, duracionSegundos: 1800, paginaInicio: 100, paginaFinal: 110,
+      })).rejects.toThrow(/futuro/i);
+    }
+
+    expect(await database.obtenerSesionesDeLibro(book.uuid)).toHaveLength(0);
+    await expect(database.obtenerLibroPorId(id)).resolves.toMatchObject({
+      pagina_actual: beforeBook.pagina_actual,
+      fecha_inicio_lectura: beforeBook.fecha_inicio_lectura,
+      estado: beforeBook.estado,
+    });
+  });
+
+  test('sesión manual rechaza fecha y hora inválidas sin residuos', async () => {
+    const { database, book, id } = await setupBook({ pagina_actual: 100 });
+    const now = new Date('2026-07-23T10:30:00.000Z');
+    const beforeBook = await database.obtenerLibroPorId(id);
+
+    await expect(database.agregarSesionManual(book.uuid, {
+      fecha: '2026-02-31', hora: '09:00', now, duracionSegundos: 900, paginaInicio: 100, paginaFinal: 105,
+    })).rejects.toThrow(/fecha/i);
+    await expect(database.agregarSesionManual(book.uuid, {
+      fecha: '2026-07-20', hora: '25:00', now, duracionSegundos: 900, paginaInicio: 100, paginaFinal: 105,
+    })).rejects.toThrow(/hora/i);
+    await expect(database.agregarSesionManual(book.uuid, {
+      fecha: '', hora: '09:00', now, duracionSegundos: 900, paginaInicio: 100, paginaFinal: 105,
+    })).rejects.toThrow(/fecha/i);
+    await expect(database.agregarSesionManual(book.uuid, {
+      fecha: '2026-07-20', hora: '', now, duracionSegundos: 900, paginaInicio: 100, paginaFinal: 105,
+    })).rejects.toThrow(/hora/i);
+
+    expect(await database.obtenerSesionesDeLibro(book.uuid)).toHaveLength(0);
+    await expect(database.obtenerLibroPorId(id)).resolves.toMatchObject({
+      pagina_actual: beforeBook.pagina_actual,
+      fecha_inicio_lectura: beforeBook.fecha_inicio_lectura,
+    });
+  });
+
   test('permite varias sesiones manuales del mismo libro en un día', async () => {
     const { database, book } = await setupBook();
     await database.agregarSesionManual(book.uuid, {
@@ -223,6 +319,70 @@ describe('sesiones de lectura integradas con SQLite', () => {
     const rows = await database.obtenerSesionesDeLibro(book.uuid);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ paginas_leidas: 15, duracion_segundos: 2400, editada: 1 });
+  });
+
+  test('edición válida conserva la misma fila y acepta instante exacto', async () => {
+    const { database, book } = await setupBook();
+    const now = new Date('2026-07-23T10:30:00.000Z');
+    const exact = localInputParts(now);
+    const manual = await database.agregarSesionManual(book.uuid, {
+      fecha: '2026-07-20', hora: '09:00', now, duracionSegundos: 1800,
+      paginaInicio: 100, paginaFinal: 110, nota: 'Original',
+    });
+
+    const edited = await database.editarSesionLectura(manual.id, {
+      ...exact, now, duracionSegundos: 2400, paginaInicio: 100, paginaFinal: 116, nota: 'Exacta',
+    });
+
+    const rows = await database.obtenerSesionesDeLibro(book.uuid);
+    expect(rows).toHaveLength(1);
+    expect(edited).toMatchObject({
+      id: manual.id, uuid: manual.uuid, hora_inicio: now.toISOString(),
+      paginas_leidas: 16, duracion_segundos: 2400, nota: 'Exacta',
+    });
+  });
+
+  test('edición futura se rechaza y conserva la fila original intacta', async () => {
+    const { database, book, id } = await setupBook({ pagina_actual: 110, fecha_inicio_lectura: '2026-07-20' });
+    const now = new Date('2026-07-23T10:30:00.000Z');
+    const manual = await database.agregarSesionManual(book.uuid, {
+      fecha: '2026-07-20', hora: '09:00', now, duracionSegundos: 1800,
+      paginaInicio: 100, paginaFinal: 110, nota: 'Original',
+    });
+    const beforeRows = await database.obtenerSesionesDeLibro(book.uuid);
+    const beforeBook = await database.obtenerLibroPorId(id);
+    const futureToday = localInputParts(new Date(now.getTime() + 60 * 60 * 1000));
+    const tomorrow = localInputParts(new Date(now.getTime() + 24 * 60 * 60 * 1000));
+
+    for (const parts of [futureToday, tomorrow]) {
+      await expect(database.editarSesionLectura(manual.id, {
+        ...parts, now, duracionSegundos: 3600, paginaInicio: 100, paginaFinal: 130,
+        nota: 'No debe persistir',
+      })).rejects.toThrow(/futuro/i);
+    }
+
+    await expect(database.obtenerSesionesDeLibro(book.uuid)).resolves.toEqual(beforeRows);
+    await expect(database.obtenerLibroPorId(id)).resolves.toMatchObject({
+      pagina_actual: beforeBook.pagina_actual,
+      fecha_inicio_lectura: beforeBook.fecha_inicio_lectura,
+      estado: beforeBook.estado,
+    });
+  });
+
+  test('un intento futuro fallido no deja residuos y luego permite un único intento válido', async () => {
+    const { database, book } = await setupBook();
+    const now = new Date('2026-07-23T10:30:00.000Z');
+    const future = localInputParts(new Date(now.getTime() + 60 * 1000));
+    const valid = localInputParts(new Date(now.getTime() - 60 * 1000));
+
+    await expect(database.agregarSesionManual(book.uuid, {
+      ...future, now, duracionSegundos: 900, paginaInicio: 100, paginaFinal: 105,
+    })).rejects.toThrow(/futuro/i);
+    await database.agregarSesionManual(book.uuid, {
+      ...valid, now, duracionSegundos: 900, paginaInicio: 100, paginaFinal: 105,
+    });
+
+    expect(await database.obtenerSesionesDeLibro(book.uuid)).toHaveLength(1);
   });
 
   test('completa una pendiente conservando cambios de fecha, hora y duración', async () => {

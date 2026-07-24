@@ -10,6 +10,7 @@ export const SESSION_ORIGINS = Object.freeze({
 });
 
 export const MAX_SESSION_SECONDS = 12 * 60 * 60;
+export const FUTURE_SESSION_ERROR_MESSAGE = 'La fecha y hora de la sesiÃ³n no pueden estar en el futuro.';
 
 export function normalizeLocalDate(value) {
   const date = String(value || '').trim();
@@ -23,6 +24,39 @@ export function normalizeLocalTime(value) {
   if (!/^\d{2}:\d{2}$/.test(time)) return null;
   const [hours, minutes] = time.split(':').map(Number);
   return hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59 ? time : null;
+}
+
+export function buildLocalSessionInstant(date, time, {
+  seconds = 0,
+  milliseconds = 0,
+} = {}) {
+  const normalizedDate = normalizeLocalDate(date);
+  if (!normalizedDate) throw new Error('La fecha de la sesiÃ³n no es vÃ¡lida.');
+  const normalizedTime = normalizeLocalTime(time);
+  if (!normalizedTime) throw new Error('La hora de la sesiÃ³n no es vÃ¡lida.');
+  const safeSeconds = Number(seconds);
+  const safeMilliseconds = Number(milliseconds);
+  if (!Number.isInteger(safeSeconds) || safeSeconds < 0 || safeSeconds > 59) {
+    throw new Error('La hora de la sesiÃ³n no es vÃ¡lida.');
+  }
+  if (!Number.isInteger(safeMilliseconds) || safeMilliseconds < 0 || safeMilliseconds > 999) {
+    throw new Error('La hora de la sesiÃ³n no es vÃ¡lida.');
+  }
+  const instant = new Date(
+    `${normalizedDate}T${normalizedTime}:${String(safeSeconds).padStart(2, '0')}.${String(safeMilliseconds).padStart(3, '0')}`
+  );
+  if (!Number.isFinite(instant.getTime())) throw new Error('La hora de la sesiÃ³n no es vÃ¡lida.');
+  return { date: normalizedDate, time: normalizedTime, instant };
+}
+
+export function validateSessionInstantIsNotFuture(instant, now = new Date()) {
+  const sessionMs = instant instanceof Date ? instant.getTime() : Date.parse(instant);
+  const nowMs = now instanceof Date ? now.getTime() : Date.parse(now);
+  if (!Number.isFinite(sessionMs) || !Number.isFinite(nowMs)) {
+    throw new Error('La hora de la sesiÃ³n no es vÃ¡lida.');
+  }
+  if (sessionMs > nowMs) throw new Error(FUTURE_SESSION_ERROR_MESSAGE);
+  return new Date(sessionMs);
 }
 
 export function calculateReadPages(startPage, endPage, totalPages = null) {
