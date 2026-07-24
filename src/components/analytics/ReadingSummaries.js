@@ -1,5 +1,15 @@
-import { useState } from 'react';
-import { Image, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useMemo, useState } from 'react';
+import {
+  FlatList,
+  Image,
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Theme } from '../../constants/theme';
@@ -15,6 +25,13 @@ function formatDate(value) {
 
 function valueOrDash(value, formatter = String) {
   return value === null || value === undefined ? '—' : formatter(value);
+}
+
+function normalizeSearch(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLocaleLowerCase('es');
 }
 
 function Cover({ uri, large = false }) {
@@ -177,6 +194,22 @@ function Detail({ item, onClose }) {
 
 export default function ReadingSummaries({ data = [] }) {
   const [selected, setSelected] = useState(null);
+  const [showAll, setShowAll] = useState(false);
+  const [query, setQuery] = useState('');
+  const recent = data.slice(0, 3);
+  const filtered = useMemo(() => {
+    const normalizedQuery = normalizeSearch(query.trim());
+    if (!normalizedQuery) return data;
+    return data.filter((item) => (
+      normalizeSearch(`${item.titulo || ''} ${item.autor || ''}`).includes(normalizedQuery)
+    ));
+  }, [data, query]);
+
+  function closeCatalog() {
+    setShowAll(false);
+    setQuery('');
+  }
+
   return (
     <View testID="reading-summaries">
       <View style={styles.headingRow}>
@@ -187,12 +220,112 @@ export default function ReadingSummaries({ data = [] }) {
         </View>
       </View>
       {data.length ? (
-        <View style={styles.list}>{data.map((item) => <SummaryCard key={item.uuid} item={item} onPress={() => setSelected(item)} />)}</View>
+        <>
+          <View style={styles.list}>
+            {recent.map((item) => (
+              <SummaryCard key={item.uuid} item={item} onPress={() => setSelected(item)} />
+            ))}
+          </View>
+          {data.length > recent.length ? (
+            <Pressable
+              testID="reading-summaries-open-all"
+              accessibilityRole="button"
+              accessibilityLabel={`Ver todos los resúmenes de lectura, ${data.length} libros`}
+              onPress={() => setShowAll(true)}
+              style={({ pressed }) => [styles.catalogButton, pressed && styles.catalogButtonPressed]}
+            >
+              <Text style={styles.catalogButtonText}>VER TODOS LOS RESÚMENES ({data.length})</Text>
+              <Ionicons name="arrow-forward" size={18} color={Theme.colors.accentInteractive} />
+            </Pressable>
+          ) : null}
+        </>
       ) : (
         <PremiumCard style={styles.emptyCard}>
           <Text style={styles.emptyText}>Cuando termines un libro, acá aparecerá la historia de esa lectura.</Text>
         </PremiumCard>
       )}
+
+      <Modal
+        visible={showAll}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={closeCatalog}
+      >
+        <View style={styles.catalogModal}>
+          <View style={styles.catalogHeader}>
+            <View style={styles.catalogHeaderText}>
+              <Text style={styles.eyebrow}>CRÓNICAS</Text>
+              <Text style={styles.catalogTitle}>Resúmenes de lectura</Text>
+              <Text style={styles.catalogMeta}>{data.length} libros terminados</Text>
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Cerrar todos los resúmenes"
+              onPress={closeCatalog}
+              style={styles.closeButton}
+            >
+              <Ionicons name="close" size={24} color={Theme.colors.textPrimary} />
+            </Pressable>
+          </View>
+
+          <View style={styles.searchBox}>
+            <Ionicons name="search" size={19} color={Theme.colors.textTertiary} />
+            <TextInput
+              testID="reading-summaries-search"
+              accessibilityLabel="Buscar resúmenes por título o autor"
+              value={query}
+              onChangeText={setQuery}
+              placeholder="Buscar por título o autor"
+              placeholderTextColor={Theme.colors.placeholder}
+              selectionColor={Theme.colors.accentInteractive}
+              returnKeyType="search"
+              autoCorrect={false}
+              style={styles.searchInput}
+            />
+            {query ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Limpiar búsqueda"
+                onPress={() => setQuery('')}
+                hitSlop={8}
+                style={styles.clearSearch}
+              >
+                <Ionicons name="close-circle" size={20} color={Theme.colors.textTertiary} />
+              </Pressable>
+            ) : null}
+          </View>
+
+          <Text style={styles.resultCount}>
+            {filtered.length === 1 ? '1 resultado' : `${filtered.length} resultados`}
+          </Text>
+
+          <FlatList
+            testID="reading-summaries-catalog"
+            data={filtered}
+            keyExtractor={(item) => item.uuid}
+            renderItem={({ item }) => (
+              <SummaryCard item={item} onPress={() => setSelected(item)} />
+            )}
+            ItemSeparatorComponent={() => <View style={styles.catalogSeparator} />}
+            ListEmptyComponent={(
+              <View style={styles.catalogEmpty}>
+                <Ionicons name="search-outline" size={30} color={Theme.colors.textTertiary} />
+                <Text style={styles.emptyText}>No encontramos resúmenes con esa búsqueda.</Text>
+              </View>
+            )}
+            contentContainerStyle={[
+              styles.catalogList,
+              filtered.length === 0 && styles.catalogListEmpty,
+            ]}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+            initialNumToRender={8}
+            maxToRenderPerBatch={8}
+            windowSize={7}
+          />
+        </View>
+      </Modal>
+
       {selected ? <Detail item={selected} onClose={() => setSelected(null)} /> : null}
     </View>
   );
@@ -219,6 +352,22 @@ const styles = StyleSheet.create({
   noData: { marginTop: Theme.spacing.sm, color: Theme.colors.warning, fontFamily: Theme.typography.families.interface, fontSize: 11 },
   emptyCard: { backgroundColor: Theme.colors.surfaceElevated },
   emptyText: { color: Theme.colors.textSecondary, fontFamily: Theme.typography.families.interface, ...Theme.typography.body },
+  catalogButton: { minHeight: 48, marginTop: Theme.spacing.md, paddingHorizontal: Theme.spacing.lg, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Theme.spacing.sm, borderRadius: Theme.radii.md, borderWidth: 1, borderColor: Theme.colors.accentStroke, backgroundColor: Theme.colors.accentGlow },
+  catalogButtonPressed: { backgroundColor: Theme.colors.surfacePressed },
+  catalogButtonText: { color: Theme.colors.accentInteractive, fontFamily: Theme.typography.families.interfaceSemiBold, ...Theme.typography.button },
+  catalogModal: { flex: 1, backgroundColor: Theme.colors.background, paddingTop: Theme.spacing.lg },
+  catalogHeader: { paddingHorizontal: Theme.spacing.lg, flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: Theme.spacing.md },
+  catalogHeaderText: { flex: 1 },
+  catalogTitle: { marginTop: 2, color: Theme.colors.textPrimary, fontFamily: Theme.typography.families.interfaceSemiBold, fontSize: 26, lineHeight: 32 },
+  catalogMeta: { marginTop: Theme.spacing.xs, color: Theme.colors.textSecondary, fontFamily: Theme.typography.families.interface, ...Theme.typography.secondary },
+  searchBox: { minHeight: 48, marginTop: Theme.spacing.lg, marginHorizontal: Theme.spacing.lg, paddingHorizontal: Theme.spacing.md, flexDirection: 'row', alignItems: 'center', gap: Theme.spacing.sm, borderRadius: Theme.radii.md, borderWidth: 1, borderColor: Theme.colors.strokeStrong, backgroundColor: Theme.colors.surfaceElevated },
+  searchInput: { flex: 1, minHeight: 46, paddingVertical: 0, color: Theme.colors.textPrimary, fontFamily: Theme.typography.families.interface, ...Theme.typography.body },
+  clearSearch: { width: 32, height: 44, alignItems: 'center', justifyContent: 'center' },
+  resultCount: { marginTop: Theme.spacing.md, marginHorizontal: Theme.spacing.lg, color: Theme.colors.textTertiary, fontFamily: Theme.typography.families.interfaceSemiBold, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.8 },
+  catalogList: { padding: Theme.spacing.lg, paddingTop: Theme.spacing.md, paddingBottom: Theme.spacing.xxxl },
+  catalogListEmpty: { flexGrow: 1 },
+  catalogSeparator: { height: Theme.spacing.md },
+  catalogEmpty: { flex: 1, minHeight: 220, alignItems: 'center', justifyContent: 'center', gap: Theme.spacing.md, paddingHorizontal: Theme.spacing.xl },
   modal: { flex: 1, backgroundColor: Theme.colors.background },
   modalContent: { padding: Theme.spacing.lg, paddingBottom: Theme.spacing.xxxl * 2 },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },

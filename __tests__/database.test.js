@@ -34,7 +34,10 @@ describe('integridad de database.js', () => {
       INSERT INTO sesiones_lectura (libro_uuid, fecha, hora_inicio, hora_fin, paginas_leidas)
       VALUES
         ('book-legacy-00001', '2026-01-02', '2026-01-02T10:00:00.000Z', '2026-01-02T10:30:00.000Z', 20),
-        ('book-legacy-00002', '2026-01-03', '2026-01-03T11:00:00.000Z', '2026-01-03T10:00:00.000Z', 15);
+        ('book-legacy-00002', '2026-01-03', '2026-01-03T11:00:00.000Z', '2026-01-03T10:00:00.000Z', 15),
+        ('book-legacy-00003', '2026-01-04', '2026-01-04T10:00:00.000Z', '2026-01-04T11:00:00.000Z', 0),
+        ('book-legacy-open1', '2026-01-05', '2026-01-05T10:00:00.000Z', NULL, 0),
+        ('book-legacy-open2', '2026-01-05', '2026-01-05T11:00:00.000Z', NULL, 0);
       PRAGMA user_version = 5;
     `);
     const database = require('../src/database');
@@ -44,23 +47,36 @@ describe('integridad de database.js', () => {
     const version = await dbV5.getFirstAsync('PRAGMA user_version');
     const sesiones = await dbV5.getAllAsync('SELECT * FROM sesiones_lectura ORDER BY id');
     const deseo = await dbV5.getFirstAsync('SELECT * FROM lista_compras');
-    expect(version.user_version).toBe(6);
+    expect(version.user_version).toBe(7);
     expect(sesiones[0]).toMatchObject({
       paginas_leidas: 20,
       pagina_inicio: null,
       pagina_fin: null,
       duracion_segundos: 1800,
+      estado: 'completada',
+      origen: 'cronometro',
+      uuid: expect.stringMatching(/^ses-/),
     });
     expect(sesiones[1]).toMatchObject({
       paginas_leidas: 15,
       pagina_inicio: null,
       pagina_fin: null,
       duracion_segundos: null,
+      estado: 'completada',
+    });
+    expect(sesiones[2]).toMatchObject({
+      paginas_leidas: 0, pagina_fin: null, duracion_segundos: 3600, estado: 'pendiente',
+    });
+    expect(sesiones[3]).toMatchObject({
+      paginas_leidas: 0, pagina_fin: null, duracion_segundos: 1, estado: 'pendiente',
+    });
+    expect(sesiones[4]).toMatchObject({
+      paginas_leidas: 0, pagina_fin: null, estado: 'activa',
     });
     expect(deseo).toMatchObject({ estado: 'activo', fecha_resolucion: null, libro_uuid_adquirido: null });
   });
 
-  test('aplica migraciones hasta user_version 6 y crea sesiones, etiquetas, FTS5 e índices', async () => {
+  test('aplica migraciones hasta user_version 7 y crea sesiones, etiquetas, FTS5 e índices', async () => {
     const { database, sqlite } = loadSubject();
 
     await database.inicializarBaseDeDatos();
@@ -69,7 +85,7 @@ describe('integridad de database.js', () => {
     expect(sqlite.openDatabaseAsync).toHaveBeenCalledWith('biblioteca.db', {
       finalizeUnusedStatementsBeforeClosing: false,
     });
-    expect(state.userVersion).toBe(6);
+    expect(state.userVersion).toBe(7);
     expect([...state.tables]).toEqual(expect.arrayContaining([
       'mis_libros',
       'lista_compras',
@@ -78,7 +94,7 @@ describe('integridad de database.js', () => {
       'mis_libros_fts',
       'sesiones_lectura',
     ]));
-    expect([...state.columns.mis_libros]).toEqual(expect.arrayContaining(['fecha_fin', 'uuid']));
+    expect([...state.columns.mis_libros]).toEqual(expect.arrayContaining(['fecha_fin', 'fecha_inicio_lectura', 'uuid']));
     expect([...state.columns.lista_compras]).toContain('uuid');
     expect([...state.columns.lista_compras]).toEqual(expect.arrayContaining([
       'estado', 'fecha_resolucion', 'libro_uuid_adquirido',
@@ -98,6 +114,9 @@ describe('integridad de database.js', () => {
       'idx_sesiones_libro',
       'idx_sesion_activa_por_libro',
       'idx_sesiones_libro_hora_inicio',
+      'idx_sesiones_uuid',
+      'idx_sesion_activa_global',
+      'idx_sesiones_libro_estado_fecha',
       'idx_lista_compras_estado_fecha',
     ]));
     expect([...state.triggers]).toEqual(expect.arrayContaining([
@@ -105,6 +124,9 @@ describe('integridad de database.js', () => {
       'mis_libros_fts_delete',
       'mis_libros_fts_update',
     ]));
+
+    await database.inicializarBaseDeDatos();
+    expect(sqlite.__getState().userVersion).toBe(7);
   });
 
   test('registra una sesión, calcula páginas y expone métricas mensuales reales', async () => {

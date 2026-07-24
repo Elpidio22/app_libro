@@ -195,6 +195,36 @@ describe('Dashboard de Crónicas', () => {
     expect(screen.getByText('Nota final')).toBeTruthy();
   });
 
+  test('limita el dashboard a tres resúmenes y permite buscar en el catálogo completo', async () => {
+    const summaries = Array.from({ length: 5 }, (_, index) => ({
+      id: index + 1,
+      uuid: `summary-catalog-${index + 1}`,
+      titulo: index === 4 ? 'El jardín de senderos' : `Lectura ${index + 1}`,
+      autor: index === 3 ? 'Autora Especial' : `Autor ${index + 1}`,
+      portada_url: null,
+      fecha_fin: `2026-07-${String(20 - index).padStart(2, '0')}`,
+      etiquetas: [],
+      actividad: null,
+    }));
+    const screen = await render(<ReadingSummaries data={summaries} />);
+
+    expect(screen.getByTestId('reading-summary-summary-catalog-1')).toBeTruthy();
+    expect(screen.getByTestId('reading-summary-summary-catalog-3')).toBeTruthy();
+    expect(screen.queryByTestId('reading-summary-summary-catalog-4')).toBeNull();
+    expect(screen.getByText('VER TODOS LOS RESÚMENES (5)')).toBeTruthy();
+
+    await act(async () => fireEvent.press(screen.getByTestId('reading-summaries-open-all')));
+    expect(screen.getByTestId('reading-summary-summary-catalog-4')).toBeTruthy();
+    expect(screen.getByTestId('reading-summary-summary-catalog-5')).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.changeText(screen.getByTestId('reading-summaries-search'), 'jardin');
+    });
+    await waitFor(() => expect(screen.getByText('1 resultado')).toBeTruthy());
+    expect(screen.queryByTestId('reading-summary-summary-catalog-4')).toBeNull();
+    expect(screen.getByTestId('reading-summary-summary-catalog-5')).toBeTruthy();
+  });
+
   test('explica una muestra insuficiente sin inventar estimaciones', async () => {
     const screen = await render(
       <ReadingEstimateCard velocity={{

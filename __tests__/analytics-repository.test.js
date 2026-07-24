@@ -283,7 +283,7 @@ describe('analyticsRepository', () => {
       await database.iniciarSesionLectura(book.uuid, 10);
       const trasInicio = revisions.getDatabaseRevisions();
       expect(trasInicio.sessionsRevision).toBe(antesInicio.sessionsRevision + 1);
-      expect(trasInicio.booksRevision).toBe(antesInicio.booksRevision);
+      expect(trasInicio.booksRevision).toBe(antesInicio.booksRevision + 1);
 
       jest.setSystemTime(new Date('2026-07-15T10:30:00.000Z'));
       await database.terminarSesionLectura(book.uuid, 25);

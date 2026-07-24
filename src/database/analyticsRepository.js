@@ -6,11 +6,20 @@ import { getDatabaseRevisions } from './revisions';
 const MAX_SESSION_SECONDS = 12 * 60 * 60;
 const VALID_ACTIVITY_SQL = `
   hora_fin IS NOT NULL
-  AND paginas_leidas >= 0
-  AND (pagina_inicio IS NULL OR pagina_fin IS NULL OR pagina_fin >= pagina_inicio)
+  AND julianday(hora_inicio) IS NOT NULL
+  AND julianday(hora_fin) IS NOT NULL
+  AND julianday(hora_fin) >= julianday(hora_inicio)
+  AND COALESCE(estado, 'completada') IN ('completada', 'pendiente')
+  AND (
+    COALESCE(estado, 'completada') = 'pendiente'
+    OR (paginas_leidas >= 0 AND (pagina_inicio IS NULL OR pagina_fin IS NULL OR pagina_fin >= pagina_inicio))
+  )
   AND (duracion_segundos IS NULL OR duracion_segundos BETWEEN 1 AND ${MAX_SESSION_SECONDS})
 `;
 const VALID_SESSION_SQL = `${VALID_ACTIVITY_SQL}
+  AND COALESCE(estado, 'completada') = 'completada'
+  AND paginas_leidas >= 0
+  AND pagina_inicio IS NOT NULL AND pagina_fin IS NOT NULL AND pagina_fin >= pagina_inicio
   AND duracion_segundos BETWEEN 1 AND ${MAX_SESSION_SECONDS}
 `;
 
@@ -89,8 +98,11 @@ export function construirResumenesLectura(libros, sesiones, etiquetas) {
     const primeraSesion = fechas[0] || null;
     const ultimaSesion = fechas[fechas.length - 1] || null;
     const diasCalendario = calcularDiasCalendario(primeraSesion, ultimaSesion);
-    const paginasRegistradas = validas.reduce((total, sesion) => total + numero(sesion.paginas_leidas), 0);
+    const completas = validas.filter((sesion) => (sesion.estado || 'completada') === 'completada'
+      && sesion.pagina_inicio != null && sesion.pagina_fin != null);
+    const paginasRegistradas = completas.reduce((total, sesion) => total + numero(sesion.paginas_leidas), 0);
     const duracionSegundos = validas.reduce((total, sesion) => total + numero(sesion.duracion_calculada), 0);
+    const segundosVelocidad = completas.reduce((total, sesion) => total + numero(sesion.duracion_calculada), 0);
     const paginasTotales = libro.paginas_totales == null ? null : numero(libro.paginas_totales);
     const cobertura = paginasTotales > 0 ? Math.min(1, paginasRegistradas / paginasTotales) : null;
     const totalSesiones = totalSesionesPorLibro.get(libro.uuid) || 0;
@@ -109,9 +121,10 @@ export function construirResumenesLectura(libros, sesiones, etiquetas) {
         regularidad: diasCalendario ? diasActivos / diasCalendario : null,
         paginas_registradas: paginasRegistradas,
         duracion_segundos: duracionSegundos,
-        paginas_promedio_sesion: paginasRegistradas / validas.length,
+        paginas_promedio_sesion: completas.length ? paginasRegistradas / completas.length : null,
         minutos_promedio_sesion: (duracionSegundos / 60) / validas.length,
-        velocidad_paginas_hora: duracionSegundos > 0 ? (paginasRegistradas * 3600) / duracionSegundos : null,
+        velocidad_paginas_hora: segundosVelocidad > 0 ? (paginasRegistradas * 3600) / segundosVelocidad : null,
+        sesiones_pendientes: validas.length - completas.length,
         cobertura_sesiones: cobertura,
         cobertura_parcial: cobertura !== null && cobertura < 1,
       } : null,
@@ -121,7 +134,7 @@ export function construirResumenesLectura(libros, sesiones, etiquetas) {
 }
 
 function sqlConAlias(sql, alias) {
-  return sql.replace(/\b(hora_fin|duracion_segundos|paginas_leidas|pagina_inicio|pagina_fin)\b/g, `${alias}.$1`);
+  return sql.replace(/\b(hora_fin|duracion_segundos|paginas_leidas|pagina_inicio|pagina_fin|estado)\b/g, `${alias}.$1`);
 }
 
 let cache = null;
@@ -216,7 +229,9 @@ async function consultarDashboard(db, rango) {
              COUNT(*) AS sesiones,
              COUNT(DISTINCT fecha) AS dias_activos,
              COALESCE(AVG(duracion_segundos), 0) AS sesion_promedio_segundos,
-             COALESCE(AVG(paginas_leidas), 0) AS sesion_promedio_paginas
+             COALESCE(AVG(CASE WHEN COALESCE(estado, 'completada') = 'completada'
+               AND pagina_inicio IS NOT NULL AND pagina_fin IS NOT NULL
+               THEN paginas_leidas END), 0) AS sesion_promedio_paginas
       FROM sesiones_lectura
       WHERE fecha BETWEEN ? AND ? AND ${VALID_ACTIVITY_SQL}`,
     rango.desde, rango.hasta),
@@ -312,7 +327,8 @@ async function consultarDashboard(db, rango) {
       ORDER BY fecha_fin IS NULL ASC, fecha_fin DESC, titulo COLLATE NOCASE`),
     db.getAllAsync(`
       SELECT s.id, s.libro_uuid, s.fecha, s.hora_inicio, s.hora_fin,
-             s.paginas_leidas, s.pagina_inicio, s.pagina_fin, s.duracion_segundos
+             s.paginas_leidas, s.pagina_inicio, s.pagina_fin, s.duracion_segundos,
+             s.estado, s.origen, s.nota, s.editada
       FROM sesiones_lectura s
       JOIN mis_libros l ON l.uuid = s.libro_uuid
       WHERE l.estado = 'terminado'

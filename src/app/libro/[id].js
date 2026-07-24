@@ -20,13 +20,10 @@ import {
   actualizarLibro,
   crearEtiqueta,
   eliminarLibro,
-  iniciarSesionLectura,
   obtenerEtiquetas,
   obtenerEtiquetasDeLibro,
   obtenerLibroPorId,
-  obtenerSesionActiva,
   quitarEtiquetaDelLibro,
-  terminarSesionLectura,
 } from '../../database';
 import {
   descartarPortadaTemporal,
@@ -37,24 +34,27 @@ import {
 } from '../../portadas';
 import { Theme } from '../../constants/theme';
 import { PremiumButton, PremiumCard } from '../../components/PremiumUI';
+import BookReadingCenter from '../../components/BookReadingCenter';
 import { useKeyboardAwareScroll } from '../../hooks/useKeyboardAwareScroll';
 
 const ESTADOS = ['quiero leer', 'leyendo', 'terminado', 'abandonado'];
+
+function fechaLocalISO(fecha = new Date()) {
+  return new Date(fecha.getTime() - fecha.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
 
 export default function LibroDetalleScreen() {
   const { scrollRef, keyboardHeight, onInputFocus, onScroll } = useKeyboardAwareScroll();
   const isMountedRef = useRef(false);
   const portadaTemporalRef = useRef(null);
   const isProcessingTagsRef = useRef(false);
+  const libroPersistidoRef = useRef(null);
   const { id } = useLocalSearchParams();
   const router = useRouter();
   const [libro, setLibro] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [editando, setEditando] = useState(false);
-  const [sesionActiva, setSesionActiva] = useState(null);
-  const [paginaSesion, setPaginaSesion] = useState('0');
-  const [procesandoSesion, setProcesandoSesion] = useState(false);
   const [etiquetas, setEtiquetas] = useState([]);
   const [etiquetasAsignadas, setEtiquetasAsignadas] = useState(new Set());
   const [nuevaEtiqueta, setNuevaEtiqueta] = useState('');
@@ -71,8 +71,7 @@ export default function LibroDetalleScreen() {
         ]);
         return;
       }
-      const [sesion, todasLasEtiquetas, etiquetasDelLibro] = await Promise.all([
-        obtenerSesionActiva(encontrado.uuid),
+      const [todasLasEtiquetas, etiquetasDelLibro] = await Promise.all([
         obtenerEtiquetas(),
         obtenerEtiquetasDeLibro(encontrado.uuid),
       ]);
@@ -83,8 +82,7 @@ export default function LibroDetalleScreen() {
         pagina_actual: String(encontrado.pagina_actual ?? 0),
         notas: encontrado.notas || '',
       });
-      setSesionActiva(sesion);
-      setPaginaSesion(String(encontrado.pagina_actual ?? 0));
+      libroPersistidoRef.current = encontrado;
       setEtiquetas(todasLasEtiquetas);
       setEtiquetasAsignadas(new Set(etiquetasDelLibro.map((etiqueta) => etiqueta.uuid)));
     } catch (error) {
@@ -159,7 +157,8 @@ export default function LibroDetalleScreen() {
     }
   }
 
-  async function guardar() {
+  async function guardar(options = {}) {
+    const { fechasConfirmadas = false, fechaFin = libro.fecha_fin } = options?.nativeEvent ? {} : options;
     const paginaActual = Number(libro.pagina_actual);
     const paginasTotales = libro.paginas_totales === '' ? null : Number(libro.paginas_totales);
     if (!libro.titulo.trim()) {
@@ -178,6 +177,31 @@ export default function LibroDetalleScreen() {
       Alert.alert('Progreso inválido', 'La página actual no puede superar las páginas totales.');
       return;
     }
+    const original = libroPersistidoRef.current;
+    if (!fechasConfirmadas && original?.estado !== 'terminado' && libro.estado === 'terminado') {
+      const fechaSugerida = libro.fecha_fin || fechaLocalISO();
+      Alert.alert(
+        'Marcar como terminado',
+        `Se registrará ${fechaSugerida} como fecha de finalización. Puedes cambiarla en el campo de fechas antes de confirmar.`,
+        [
+          { text: 'Cancelar', style: 'cancel' },
+          { text: 'Confirmar', onPress: () => guardar({ fechasConfirmadas: true, fechaFin: fechaSugerida }) },
+        ]
+      );
+      return;
+    }
+    if (!fechasConfirmadas && original?.estado === 'terminado' && libro.estado !== 'terminado') {
+      Alert.alert(
+        'Posible relectura',
+        'Este libro ya tiene una lectura finalizada. ¿Quieres conservar esa fecha como registro histórico?',
+        [
+          { text: 'Cancelar', style: 'cancel' },
+          { text: 'Quitar fecha', style: 'destructive', onPress: () => guardar({ fechasConfirmadas: true, fechaFin: null }) },
+          { text: 'Conservar', onPress: () => guardar({ fechasConfirmadas: true, fechaFin: original.fecha_fin }) },
+        ]
+      );
+      return;
+    }
 
     setSaving(true);
     try {
@@ -189,6 +213,8 @@ export default function LibroDetalleScreen() {
         estado: libro.estado,
         notas: libro.notas,
         portada_url: libro.portada_url || null,
+        fecha_inicio_lectura: libro.fecha_inicio_lectura || null,
+        fecha_fin: fechaFin || null,
       });
       Alert.alert('Crónica guardada', 'Los cambios fueron guardados en el dispositivo.');
       portadaTemporalRef.current = null;
@@ -271,46 +297,6 @@ export default function LibroDetalleScreen() {
     }
   }
 
-  async function alternarSesionLectura() {
-    if (procesandoSesion) return;
-    const paginaActual = Number(paginaSesion);
-    if (!Number.isInteger(paginaActual) || paginaActual < 0) {
-      Alert.alert('Página inválida', 'Ingresa la página actual antes de terminar la sesión.');
-      return;
-    }
-    const total = libro.paginas_totales === '' ? null : Number(libro.paginas_totales);
-    if (total !== null && paginaActual > total) {
-      Alert.alert('Página inválida', 'La página actual no puede superar las páginas totales del libro.');
-      return;
-    }
-
-    setProcesandoSesion(true);
-    try {
-      if (!sesionActiva) {
-        const sesion = await iniciarSesionLectura(libro.uuid, paginaActual);
-        if (!isMountedRef.current) return;
-        setSesionActiva(sesion);
-        Alert.alert('Sesión iniciada', 'El tiempo de lectura comenzó a registrarse en este dispositivo.');
-      } else {
-        const sesionTerminada = await terminarSesionLectura(libro.uuid, paginaActual);
-        if (!isMountedRef.current) return;
-        setSesionActiva(null);
-        setLibro((actual) => ({ ...actual, pagina_actual: String(paginaActual) }));
-        Alert.alert(
-          'Sesión terminada',
-          `Leíste ${sesionTerminada.paginas_leidas} páginas durante ${sesionTerminada.minutos} minutos.`
-        );
-      }
-    } catch (error) {
-      console.error(error);
-      if (isMountedRef.current) {
-        Alert.alert('No se pudo registrar la sesión', error.message || 'Inténtalo nuevamente.');
-      }
-    } finally {
-      if (isMountedRef.current) setProcesandoSesion(false);
-    }
-  }
-
   function confirmarEliminacion() {
     Alert.alert(
       'Eliminar libro',
@@ -369,50 +355,16 @@ export default function LibroDetalleScreen() {
           </Pressable>
         </View> : null}
 
-        <PremiumCard style={[styles.readCard, styles.sessionCard]}>
-          <View style={styles.sessionHeading}>
-            <View style={[styles.sessionIcon, sesionActiva && styles.sessionIconActive]}>
-              <Ionicons
-                name={sesionActiva ? 'timer' : 'timer-outline'}
-                size={22}
-                color={sesionActiva ? Theme.colors.accentInteractive : Theme.colors.textSecondary}
-              />
+        {!editando ? (
+          <>
+            <View style={styles.museumHeader}>
+              <View style={styles.statusBadge}><View style={styles.statusDot} /><Text style={styles.statusText}>{libro.estado}</Text></View>
+              <Text style={styles.museumTitle}>{libro.titulo}</Text>
+              <Text style={styles.museumAuthor}>{libro.autor || 'Autor desconocido'}</Text>
             </View>
-            <View style={styles.sessionCopy}>
-              <Text style={styles.sessionTitle}>{sesionActiva ? 'Sesión en curso' : 'Sesión de lectura'}</Text>
-              <Text style={styles.sessionHelp}>
-                {sesionActiva ? 'Actualiza la página alcanzada antes de terminar.' : 'Registra tiempo y páginas leídas.'}
-              </Text>
-            </View>
-          </View>
-          {sesionActiva ? (
-            <View style={styles.sessionPageRow}>
-              <Text style={styles.readLabel}>PÁGINA ACTUAL</Text>
-              <TextInput
-                value={paginaSesion}
-                onChangeText={(value) => setPaginaSesion(value.replace(/\D/g, ''))}
-                onFocus={mantenerInputVisible}
-                style={styles.sessionPageInput}
-                keyboardType="number-pad"
-                accessibilityLabel="Página alcanzada en la sesión"
-              />
-            </View>
-          ) : null}
-          <PremiumButton
-            style={styles.sessionButton}
-            onPress={alternarSesionLectura}
-            disabled={procesandoSesion}
-          >
-            {procesandoSesion ? (
-              <ActivityIndicator color={Theme.colors.textPrimary} />
-            ) : (
-              <>
-                <Ionicons name={sesionActiva ? 'stop' : 'play'} size={18} color={Theme.colors.textPrimary} />
-                <Text style={styles.saveText}>{sesionActiva ? 'TERMINAR SESIÓN' : 'INICIAR SESIÓN DE LECTURA'}</Text>
-              </>
-            )}
-          </PremiumButton>
-        </PremiumCard>
+            <BookReadingCenter book={libro} onReload={cargarLibro} />
+          </>
+        ) : null}
 
         {editando ? <>
         <PremiumCard style={styles.card}>
@@ -428,13 +380,20 @@ export default function LibroDetalleScreen() {
           <Text style={styles.sectionTitle}>Estado de lectura</Text>
           <View style={styles.states}>
             {ESTADOS.map((estado) => (
-              <Pressable key={estado} onPress={() => cambiarCampo('estado', estado)} style={[styles.stateButton, libro.estado === estado && styles.stateButtonActive]}>
+              <Pressable key={estado} onPress={() => {
+                cambiarCampo('estado', estado);
+                if (estado === 'terminado' && !libro.fecha_fin) cambiarCampo('fecha_fin', fechaLocalISO());
+              }} style={[styles.stateButton, libro.estado === estado && styles.stateButtonActive]}>
                 <Text style={[styles.stateText, libro.estado === estado && styles.stateTextActive]}>{estado}</Text>
               </Pressable>
             ))}
           </View>
           <Text style={styles.label}>PÁGINA ACTUAL</Text>
           <TextInput value={libro.pagina_actual} onFocus={mantenerInputVisible} onChangeText={(value) => cambiarCampo('pagina_actual', value.replace(/\D/g, ''))} style={styles.input} keyboardType="number-pad" />
+          <Text style={styles.label}>FECHA DE INICIO (AAAA-MM-DD)</Text>
+          <TextInput value={libro.fecha_inicio_lectura || ''} onFocus={mantenerInputVisible} onChangeText={(value) => cambiarCampo('fecha_inicio_lectura', value)} style={styles.input} placeholder="No registrada" placeholderTextColor={Theme.colors.textTertiary} />
+          <Text style={styles.label}>FECHA DE FINALIZACIÓN (AAAA-MM-DD)</Text>
+          <TextInput value={libro.fecha_fin || ''} onFocus={mantenerInputVisible} onChangeText={(value) => cambiarCampo('fecha_fin', value)} style={styles.input} placeholder="En lectura" placeholderTextColor={Theme.colors.textTertiary} />
           <Text style={styles.label}>NOTAS PERSONALES</Text>
           <TextInput value={libro.notas} onFocus={(event) => mantenerInputVisible(event, 150)} onChangeText={(value) => cambiarCampo('notas', value)} style={[styles.input, styles.notes]} multiline textAlignVertical="top" placeholder="Escribe aquí tu crónica…" placeholderTextColor={Theme.colors.textTertiary} />
         </PremiumCard>
@@ -502,25 +461,7 @@ export default function LibroDetalleScreen() {
           <Ionicons name="trash-outline" size={19} color={Theme.colors.textPrimary} />
           <Text style={styles.deleteText}>ELIMINAR LIBRO</Text>
         </Pressable>
-        </> : <>
-          <View style={styles.museumHeader}>
-            <View style={styles.statusBadge}><View style={styles.statusDot} /><Text style={styles.statusText}>{libro.estado}</Text></View>
-            <Text style={styles.museumTitle}>{libro.titulo}</Text>
-            <Text style={styles.museumAuthor}>{libro.autor || 'Autor desconocido'}</Text>
-          </View>
-          <PremiumCard style={styles.readCard}>
-            <Text style={styles.sectionTitle}>Ficha técnica</Text>
-            <View style={styles.readRow}><Text style={styles.readLabel}>ISBN</Text><Text style={styles.readValue}>{libro.isbn || 'Sin ISBN'}</Text></View>
-            <View style={styles.readDivider} />
-            <View style={styles.readRow}><Text style={styles.readLabel}>Extensión</Text><Text style={styles.readValue}>{libro.paginas_totales ? `${libro.paginas_totales} páginas` : 'Sin especificar'}</Text></View>
-            <View style={styles.readDivider} />
-            <View style={styles.readRow}><Text style={styles.readLabel}>Progreso</Text><Text style={styles.readValue}>{libro.pagina_actual} {libro.paginas_totales ? `/ ${libro.paginas_totales}` : 'páginas'}</Text></View>
-          </PremiumCard>
-          <PremiumCard style={styles.readCard}>
-            <Text style={styles.sectionTitle}>Notas personales</Text>
-            <Text style={[styles.notesText, !libro.notas && styles.emptyNotes]}>{libro.notas || 'Todavía no escribiste notas para este libro.'}</Text>
-          </PremiumCard>
-        </>}
+        </> : null}
       </ScrollView>
       {!editando ? (
         <Pressable style={({ pressed }) => [styles.fab, pressed && styles.fabPressed]} onPress={() => setEditando(true)} accessibilityRole="button" accessibilityLabel="Editar libro">

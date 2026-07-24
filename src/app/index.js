@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { buscarLibros, obtenerEtiquetas } from '../database';
+import { buscarLibros, obtenerEtiquetas, obtenerSesionActivaConLibro } from '../database';
 import { Theme } from '../constants/theme';
 import { PremiumCard } from '../components/PremiumUI';
 
@@ -90,6 +90,7 @@ export default function Biblioteca() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
+  const [activeSession, setActiveSession] = useState(null);
   const filtrosRef = useRef({ query, etiquetaActiva });
   filtrosRef.current = { query, etiquetaActiva };
 
@@ -120,16 +121,18 @@ export default function Biblioteca() {
       const requestId = ++searchRequestRef.current;
       const filtrosActuales = filtrosRef.current;
       try {
-        const [resultado, etiquetasDisponibles] = await Promise.all([
+        const [resultado, etiquetasDisponibles, sesionActiva] = await Promise.all([
           buscarLibros({
             texto: filtrosActuales.query,
             etiquetaUuid: filtrosActuales.etiquetaActiva,
           }),
           obtenerEtiquetas(),
+          obtenerSesionActivaConLibro(),
         ]);
         if (!isMounted || requestId !== searchRequestRef.current) return;
         setBooks(resultado);
         setEtiquetas(etiquetasDisponibles);
+        setActiveSession(sesionActiva);
         setError('');
       } catch (reason) {
         console.error(reason);
@@ -190,6 +193,23 @@ export default function Biblioteca() {
 
   return (
     <View style={styles.screen}>
+      {activeSession ? (
+        <Pressable
+          onPress={() => router.push(`/libro/${activeSession.libro_id}`)}
+          style={({ pressed }) => [styles.activeSession, pressed && styles.rowCardPressed]}
+          accessibilityRole="button"
+          accessibilityLabel={`Retomar sesión de ${activeSession.libro_titulo}`}
+        >
+          <Ionicons name="timer-outline" size={20} color={Theme.colors.accentBright} />
+          <View style={styles.activeSessionText}>
+            <Text style={styles.activeSessionLabel}>
+              {activeSession.pausada_en ? 'SESIÓN DETENIDA' : 'SESIÓN ACTIVA'}
+            </Text>
+            <Text style={styles.activeSessionTitle} numberOfLines={1}>{activeSession.libro_titulo}</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={Theme.colors.textTertiary} />
+        </Pressable>
+      ) : null}
       <View style={styles.controls}>
         <View style={styles.searchBox}>
           <Ionicons name="search-outline" size={19} color={Theme.colors.textTertiary} />
@@ -314,6 +334,22 @@ export default function Biblioteca() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: Theme.colors.background },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: Theme.colors.background },
+  activeSession: {
+    minHeight: 64,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Theme.spacing.md,
+    marginHorizontal: Theme.spacing.lg,
+    marginTop: Theme.spacing.md,
+    paddingHorizontal: Theme.spacing.md,
+    backgroundColor: Theme.colors.accentGlow,
+    borderWidth: 1,
+    borderColor: Theme.colors.accentStroke,
+    borderRadius: Theme.radii.md,
+  },
+  activeSessionText: { flex: 1 },
+  activeSessionLabel: { color: Theme.colors.accentBright, fontFamily: Theme.typography.families.interfaceSemiBold, ...Theme.typography.label },
+  activeSessionTitle: { marginTop: 2, color: Theme.colors.textPrimary, fontFamily: Theme.typography.families.editorial, ...Theme.typography.body },
   controls: { paddingTop: Theme.spacing.md, backgroundColor: Theme.colors.background, borderBottomWidth: 1, borderBottomColor: Theme.colors.stroke },
   searchBox: { height: 44, flexDirection: 'row', alignItems: 'center', gap: Theme.spacing.sm, marginHorizontal: Theme.spacing.lg, paddingHorizontal: Theme.spacing.md, backgroundColor: Theme.colors.surface, borderWidth: 1, borderColor: Theme.colors.stroke, borderRadius: Theme.radii.md },
   searchInput: { flex: 1, height: '100%', paddingVertical: 0, color: Theme.colors.textPrimary, fontFamily: Theme.typography.families.interface, ...Theme.typography.body },

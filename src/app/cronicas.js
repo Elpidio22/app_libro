@@ -39,7 +39,6 @@ function latestMonths(data = []) {
 function DashboardSkeleton() {
   return (
     <View testID="dashboard-skeleton" style={styles.skeletonScreen}>
-      <View style={[styles.skeleton, styles.skeletonTitle]} />
       <View style={[styles.skeleton, styles.skeletonSubtitle]} />
       <View style={styles.metricsGrid}>
         {[0, 1, 2, 3].map((item) => <View key={item} style={[styles.skeleton, styles.skeletonCard]} />)}
@@ -68,7 +67,6 @@ function DashboardHeader({ data, updating, warning }) {
   const { current, previous } = latestMonths(data?.tendenciaMensual);
   return (
     <View>
-      <Text style={styles.title}>Crónicas</Text>
       <View style={styles.subtitleRow}>
         <Text style={styles.subtitle}>Tu actividad de lectura</Text>
         {updating ? <Text accessibilityLiveRegion="polite" style={styles.updating}>ACTUALIZANDO</Text> : null}
@@ -213,7 +211,6 @@ export default function CronicasScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: Theme.colors.background },
   content: { padding: Theme.spacing.lg, paddingBottom: Theme.spacing.xxxl * 2 },
-  title: { marginTop: Theme.spacing.sm, color: Theme.colors.textPrimary, fontFamily: Theme.typography.families.interfaceSemiBold, fontSize: 34, lineHeight: 40 },
   subtitleRow: { minHeight: 28, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Theme.spacing.sm },
   subtitle: { color: Theme.colors.textSecondary, fontFamily: Theme.typography.families.interface, ...Theme.typography.body },
   updating: { color: Theme.colors.accentBright, fontFamily: Theme.typography.families.interfaceSemiBold, fontSize: 9, letterSpacing: 1 },
@@ -231,7 +228,6 @@ const styles = StyleSheet.create({
   retryText: { color: Theme.colors.textPrimary, fontFamily: Theme.typography.families.interfaceSemiBold, ...Theme.typography.button },
   skeletonScreen: { flex: 1, padding: Theme.spacing.lg, backgroundColor: Theme.colors.background },
   skeleton: { backgroundColor: Theme.colors.surfaceElevated, borderRadius: Theme.radii.md, borderWidth: 1, borderColor: Theme.colors.stroke },
-  skeletonTitle: { width: 180, height: 40, marginTop: Theme.spacing.sm },
   skeletonSubtitle: { width: 220, height: 18, marginTop: Theme.spacing.sm },
   skeletonCard: { flex: 1, minWidth: 142, height: 154 },
   skeletonChart: { height: 260, marginTop: Theme.spacing.sm },
